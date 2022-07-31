@@ -43,7 +43,7 @@ impl<T: Clone> BfInstruc<T> {
 	fn as_multi_with(&self, v: u32) -> Option<BfInstruc<T>>
 	where
 		T: TryFrom<u32>,
-    <T as TryFrom<u32>>::Error: std::fmt::Debug,
+		<T as TryFrom<u32>>::Error: std::fmt::Debug,
 	{
 		use BfInstruc::*;
 
