@@ -6,7 +6,7 @@ use compiler::{BfCompError, BfInstruc, BfInstructionStream, BfOptimizable};
 
 pub mod interpreter;
 
-use interpreter::{BrainFuckExecutor};
+use interpreter::BrainFuckExecutor;
 
 use io::prelude::*;
 use std::fs::File;

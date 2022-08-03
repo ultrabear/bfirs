@@ -71,10 +71,7 @@ impl<T> BfInstruc<T> {
 	}
 	fn is_multi_optimizable(&self) -> bool {
 		use BfInstruc::*;
-		match self {
-			Inc | Dec | IncPtr | DecPtr => true,
-			_ => false,
-		}
+		matches!(self, Inc | Dec | IncPtr | DecPtr)
 	}
 }
 
