@@ -51,15 +51,21 @@ impl<T> BfInstruc<T> {
 
 		// this will actually overflow on a maxxed out u32, to combat this we limit the max size of a stream to around 2 billion instructions
 		// security as layers, or something
+    
+    let rem_v = <T as Into<u32>>::into(T::MAX).checked_add(1);
+
+    let loop_use = rem_v.map(|rem| v % rem).unwrap_or(v);
+    
+
 		Some(match self {
 			Inc => IncBy(
-				(v % (T::MAX.into() + 1))
+        loop_use
 					.try_into()
 					.map_err(|_| panic!("could not convert u32 to T"))
 					.unwrap(),
 			),
 			Dec => DecBy(
-				(v % (T::MAX.into() + 1))
+        loop_use
 					.try_into()
 					.map_err(|_| panic!("could not convert u32 to T"))
 					.unwrap(),
@@ -105,11 +111,26 @@ make_optimizable!(u8);
 make_optimizable!(u16);
 make_optimizable!(u32);
 
-pub struct BfInstructionStream<T>(Vec<BfInstruc<T>>);
+pub struct BfInstructionStream<T>(Vec<BfInstruc<T>>, usize);
 
 impl<T: BfOptimizable> BfInstructionStream<T> {
 	pub fn optimized_from_text(v: impl Iterator<Item = u8>) -> Result<Self, BfCompError> {
-		let mut new = Self(Self::bf_to_stream(v));
+		let mut new = Self(Self::bf_to_stream(v), 0);
+
+		let array_len: u32 = new
+			.iter()
+			.fold(0, |accu, x| {
+				if let BfInstruc::IncPtr = x {
+					accu + 1
+				} else {
+					accu
+				}
+			})
+			.max(30_000);
+
+		new.1 = array_len
+			.try_into()
+			.expect("16 bit platforms not supported");
 
 		if new.len() > (isize::MAX as usize) {
 			return Err(BfCompError::Overflow);
@@ -122,6 +143,11 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
 
 		Ok(new)
 	}
+
+	/// returns a statically guessed array size that would work best for this brainfuck stream
+	pub fn reccomended_array_size(&self) -> usize {
+    self.1
+  }
 
 	// without this inline attr it fails to inline this function into the mainloop, preventing a considerable speedup
 	#[inline]
@@ -259,7 +285,8 @@ impl<T> BfInstructionStream<T> {
 
 impl<T> From<Vec<BfInstruc<T>>> for BfInstructionStream<T> {
 	fn from(stream: Vec<BfInstruc<T>>) -> Self {
-		Self(stream)
+    let stream_len = stream.len();
+		Self(stream, stream_len)
 	}
 }
 
