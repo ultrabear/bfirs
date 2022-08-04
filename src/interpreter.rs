@@ -44,12 +44,14 @@ macro_rules! impl_brainfuck_run {
 			#[inline]
 			unsafe fn cur_unchecked(&self) -> $T {
 				// SAFETY: The caller has asserted that the current pointer is a valid index
+				debug_assert!(self.ptr < self.data.len());
 				*self.data.get_unchecked(self.ptr)
 			}
 
 			#[inline]
 			unsafe fn map_current(&mut self, func: impl FnOnce($T) -> $T) {
 				// SAFETY: The caller has asserted that the current pointer is a valid index
+				debug_assert!(self.ptr < self.data.len());
 				*self.data.get_unchecked_mut(self.ptr) = func(self.cur_unchecked());
 			}
 

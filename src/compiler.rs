@@ -51,21 +51,20 @@ impl<T> BfInstruc<T> {
 
 		// this will actually overflow on a maxxed out u32, to combat this we limit the max size of a stream to around 2 billion instructions
 		// security as layers, or something
-    
-    let rem_v = <T as Into<u32>>::into(T::MAX).checked_add(1);
 
-    let loop_use = rem_v.map(|rem| v % rem).unwrap_or(v);
-    
+		let rem_v = <T as Into<u32>>::into(T::MAX).checked_add(1);
+
+		let loop_use = rem_v.map(|rem| v % rem).unwrap_or(v);
 
 		Some(match self {
 			Inc => IncBy(
-        loop_use
+				loop_use
 					.try_into()
 					.map_err(|_| panic!("could not convert u32 to T"))
 					.unwrap(),
 			),
 			Dec => DecBy(
-        loop_use
+				loop_use
 					.try_into()
 					.map_err(|_| panic!("could not convert u32 to T"))
 					.unwrap(),
@@ -146,8 +145,8 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
 
 	/// returns a statically guessed array size that would work best for this brainfuck stream
 	pub fn reccomended_array_size(&self) -> usize {
-    self.1
-  }
+		self.1
+	}
 
 	// without this inline attr it fails to inline this function into the mainloop, preventing a considerable speedup
 	#[inline]
@@ -285,7 +284,7 @@ impl<T> BfInstructionStream<T> {
 
 impl<T> From<Vec<BfInstruc<T>>> for BfInstructionStream<T> {
 	fn from(stream: Vec<BfInstruc<T>>) -> Self {
-    let stream_len = stream.len();
+		let stream_len = stream.len();
 		Self(stream, stream_len)
 	}
 }
