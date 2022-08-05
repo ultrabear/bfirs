@@ -11,41 +11,42 @@ use interpreter::BrainFuckExecutor;
 use std::fs::File;
 use std::io::prelude::*;
 
-use clap::{arg, value_parser, Arg, Command, ValueEnum};
+use strum_macros::EnumString;
 
-#[derive(ValueEnum, Clone, Copy)]
+#[derive(EnumString, Clone, Copy)]
 enum Mode {
-	#[clap(name = "8")]
+	#[strum(serialize = "8")]
 	U8,
-	#[clap(name = "16")]
+	#[strum(serialize = "16")]
 	U16,
-	#[clap(name = "32")]
+	#[strum(serialize = "32")]
 	U32,
 }
 
-fn get_bf_from_args() -> (Mode, Vec<u8>) {
-	let parsed = Command::new("bfirs")
-		.about("A low level brainfuck runtime")
-		.arg(arg!(-f --file [FILE] "Read and run code from a given file"))
-		.arg(arg!(-a --args [BRAINFUCK] "Read and run code from argv"))
-		.arg(
-			Arg::new("mode")
-				.long("mode")
-				.short('m')
-				.takes_value(true)
-				.value_name("mode")
-				.value_parser(value_parser!(Mode))
-				.help("Whether to use 8/16/32 bit mode, defaults to 8"),
-		)
-		.get_matches();
+use argh::{self, FromArgs};
 
-	let mut mode = Mode::U8;
+#[derive(FromArgs)]
+/// A low level brainfuck runtime.
+struct ParseResult {
+	/// read and run code from a given file
+	#[argh(option, short = 'f')]
+	file: Option<String>,
 
-	if let Some(m) = parsed.get_one::<Mode>("mode") {
-		mode = *m;
-	}
+	/// read and run code from argv
+	#[argh(option, short = 'a')]
+	args: Option<String>,
 
-	if let Some(v) = parsed.get_one::<String>("file") {
+	/// whether to use 8/16/32 bit mode, defaults to 8
+	#[argh(option, short = 'm')]
+	mode: Option<Mode>,
+}
+
+fn get_bf_from_argh() -> (Mode, Vec<u8>) {
+	let res: ParseResult = argh::from_env();
+
+	let mode = res.mode.unwrap_or(Mode::U8);
+
+	if let Some(v) = res.file {
 		let code_f = io::BufReader::new(
 			File::open(&v)
 				.map_err(|_| {
@@ -57,7 +58,7 @@ fn get_bf_from_args() -> (Mode, Vec<u8>) {
 
 		(mode, code_f.bytes().filter_map(|r| r.ok()).collect())
 	} else {
-		if let Some(v) = parsed.get_one::<String>("args") {
+		if let Some(v) = res.args {
 			(mode, v.bytes().collect())
 		} else {
 			(mode, "".bytes().collect())
@@ -66,7 +67,7 @@ fn get_bf_from_args() -> (Mode, Vec<u8>) {
 }
 
 fn main() {
-	let (mode, code) = get_bf_from_args();
+	let (mode, code) = get_bf_from_argh();
 
 	macro_rules! run_different_sizes {
 		($Ty:ty) => {{
