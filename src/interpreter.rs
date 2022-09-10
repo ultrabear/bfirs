@@ -22,6 +22,12 @@ pub struct BrainFuckExecutorBuilder<T, I, O> {
     instruction_limit: Option<u64>,
 }
 
+impl<T: Clone + Default, I: io::Read, O: io::Write> Default for BrainFuckExecutorBuilder<T, I, O> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
     pub fn new() -> Self {
         Self {
@@ -42,7 +48,7 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, 
         let array_len = self.array_len.ok_or(NoArraySize)?;
 
         Ok(BrainFuckExecutor {
-            data: std::iter::repeat(self.fill.unwrap_or(T::default()))
+            data: std::iter::repeat(self.fill.unwrap_or_default())
                 .take(array_len)
                 .collect(),
             stdin: s_in,
@@ -204,7 +210,7 @@ macro_rules! impl_brainfuck_run {
 
             #[inline]
             fn write(&mut self, v: u8) -> Result<(), BfExecError> {
-                self.stdout.write(&[v])?;
+                let _ = self.stdout.write(&[v])?;
 
                 // based on 60 fps update (actual 62.5)
                 if self.last_flush.elapsed().as_millis() > 16 {
@@ -218,7 +224,7 @@ macro_rules! impl_brainfuck_run {
             #[inline]
             fn read(&mut self) -> Result<u8, BfExecError> {
                 let mut v = [0 as u8];
-                self.stdin.read(&mut v)?;
+                let _ = self.stdin.read(&mut v)?;
                 Ok(v[0])
             }
 

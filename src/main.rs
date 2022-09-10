@@ -70,12 +70,10 @@ fn get_bf_from_argh() -> (Mode, Output, Vec<u8>) {
         );
 
         code_f.bytes().filter_map(|r| r.ok()).collect()
+    } else if let Some(v) = res.args {
+        v.bytes().collect()
     } else {
-        if let Some(v) = res.args {
-            v.bytes().collect()
-        } else {
-            "".bytes().collect()
-        }
+        "".bytes().collect()
     };
 
     (mode, output, arr)
