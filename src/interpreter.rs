@@ -29,6 +29,8 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> Default for BrainFuckExecuto
 }
 
 impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
+
+    #[must_use]
     pub fn new() -> Self {
         Self {
             stdout: None,
@@ -40,8 +42,12 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, 
         }
     }
 
+    /// Builds the executor
+    ///
+    /// # Errors
+    /// This function will error if no stream in/out is specified or if no array size is specified
     pub fn build(self) -> Result<BrainFuckExecutor<T, I, O>, ExecutorBuilderError> {
-        use ExecutorBuilderError::*;
+        use ExecutorBuilderError::{NoArraySize, NoStreamIn, NoStreamOut};
 
         let s_out = self.stdout.ok_or(NoStreamOut)?;
         let s_in = self.stdin.ok_or(NoStreamIn)?;
@@ -59,36 +65,42 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, 
         })
     }
 
+    #[must_use]
     pub fn stream_in(mut self, s: I) -> Self {
         self.stdin = Some(s);
 
         self
     }
 
+    #[must_use]
     pub fn stream_out(mut self, s: O) -> Self {
         self.stdout = Some(s);
 
         self
     }
 
+    #[must_use]
     pub fn fill(mut self, fill: T) -> Self {
         self.fill = Some(fill);
 
         self
     }
 
+    #[must_use]
     pub fn array_len(mut self, v: usize) -> Self {
         self.array_len = Some(v);
 
         self
     }
 
+    #[must_use]
     pub fn starting_ptr(mut self, ptr: usize) -> Self {
         self.starting_ptr = Some(ptr);
 
         self
     }
 
+    #[must_use]
     pub fn limit(mut self, limit: u64) -> Self {
         self.instruction_limit = Some(limit);
 
@@ -126,6 +138,8 @@ where
 }
 
 impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
+    #[allow(clippy::missing_panics_doc)]
+    #[must_use]
     pub fn new_stdio<T: Clone + Default>(
         array_len: usize,
     ) -> BrainFuckExecutor<T, io::Stdin, io::Stdout> {
@@ -134,9 +148,12 @@ impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
             .stream_out(io::stdout())
             .array_len(array_len)
             .build()
-            .unwrap()
+            // This panic should not occur because the builder has been constructed with at least the minimum amount of required fields
+            .expect("this panic should not occur, minimum builder fields are present")
     }
 
+    #[allow(clippy::missing_panics_doc)]
+    #[must_use]
     pub fn new_stdio_locked<'i, 'o, T: Clone + Default>(
         array_len: usize,
     ) -> BrainFuckExecutor<T, io::StdinLock<'i>, io::StdoutLock<'o>> {
@@ -145,7 +162,8 @@ impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
             .stream_out(io::stdout().lock())
             .array_len(array_len)
             .build()
-            .unwrap()
+            // This panic should not occur because the builder has been constructed with at least the minimum amount of required fields
+            .expect("this panic should not occur, minimum builder fields are present")
     }
 }
 
@@ -153,6 +171,11 @@ impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
 pub struct Overflow;
 
 impl<T, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
+  
+    /// Adds to instruction limit that is decremented each time `run_limited` is run
+    ///
+    /// # Errors
+    /// This function will error if the instruction limit overflows `u64`
     pub fn add_instruction_limit(&mut self, amount: u64) -> Result<(), Overflow> {
         self.instruction_limit = self.instruction_limit.checked_add(amount).ok_or(Overflow)?;
         Ok(())
@@ -293,16 +316,27 @@ macro_rules! impl_brainfuck_run {
                 Ok(())
             }
 
+            /// Runs brainfuck stream unbounded, this function is not guaranteed to halt.
+            ///
+            /// # Errors
+            /// This function will error if there is an error in the in/out streams or if the data pointer overflows/underflows.
             pub fn run(&mut self, stream: &[BfInstruc<$T>]) -> Result<(), BfExecError> {
                 self.internal_run::<false>(stream)
             }
 
+            /// Runs brainfuck with a limited instruction count specified by [`BrainFuckExecutor::instructions_left`], this function will eventually halt.
+            ///
+            /// If the brainfuck finishes executing without reaching the limit, the leftover instructions will be kept in instructions left, while if it errors instructions left will be zero.
+            ///
+            /// # Errors
+            /// This function will error if there is an error in the in/out streams, if the data pointer overflows/underflows, or if the instruction limit is reached before execution ends.
             pub fn run_limited(&mut self, stream: &[BfInstruc<$T>]) -> Result<(), BfExecError> {
                 self.internal_run::<true>(stream)
             }
 
             /// provides a calculated at runtime estimate of instruction throughput for the given mode using 10k iterations,
             /// does not take cache locality into account so will likely return higher numbers than real world data
+            #[must_use]
             pub fn estimate_instructions_per_second() -> u128 {
                 const SAMPLE: u32 = 100_000;
 
