@@ -14,5 +14,5 @@ argh = "0.1"
 
 [profile.release-lto]
 inherits = "release"
-#lto = "thin"
+lto = true
 strip = "symbols"

@@ -23,6 +23,14 @@ enum Mode {
 	U32,
 }
 
+#[derive(EnumString, Copy, Clone)]
+enum Output {
+	#[strum(serialize = "interpret", serialize = "i")]
+	Interpret,
+	#[strum(serialize = "render", serialize = "c")]
+	Render,
+}
+
 use argh::{self, FromArgs};
 
 #[derive(FromArgs)]
@@ -39,14 +47,19 @@ struct ParseResult {
 	/// whether to use 8/16/32 bit mode, defaults to 8
 	#[argh(option, short = 'm')]
 	mode: Option<Mode>,
+
+	/// whether to 'interpret' or 'render' to C (shorthand i/c)
+	#[argh(option, short = 'o')]
+	output: Option<Output>,
 }
 
-fn get_bf_from_argh() -> (Mode, Vec<u8>) {
+fn get_bf_from_argh() -> (Mode, Output, Vec<u8>) {
 	let res: ParseResult = argh::from_env();
 
 	let mode = res.mode.unwrap_or(Mode::U8);
+	let output = res.output.unwrap_or(Output::Interpret);
 
-	if let Some(v) = res.file {
+	let arr = if let Some(v) = res.file {
 		let code_f = io::BufReader::new(
 			File::open(&v)
 				.map_err(|_| {
@@ -56,18 +69,20 @@ fn get_bf_from_argh() -> (Mode, Vec<u8>) {
 				.unwrap(),
 		);
 
-		(mode, code_f.bytes().filter_map(|r| r.ok()).collect())
+		code_f.bytes().filter_map(|r| r.ok()).collect()
 	} else {
 		if let Some(v) = res.args {
-			(mode, v.bytes().collect())
+			v.bytes().collect()
 		} else {
-			(mode, "".bytes().collect())
+			"".bytes().collect()
 		}
-	}
+	};
+
+	(mode, output, arr)
 }
 
 fn main() {
-	let (mode, code) = get_bf_from_argh();
+	let (mode, output, code) = get_bf_from_argh();
 
 	macro_rules! run_different_sizes {
 		($Ty:ty) => {{
@@ -78,15 +93,25 @@ fn main() {
 				})
 				.unwrap();
 
-			let mut execenv = BrainFuckExecutor::new_stdio::<$Ty>(code.reccomended_array_size());
+			match output {
+				Output::Interpret => {
+					let mut execenv =
+						BrainFuckExecutor::new_stdio_locked::<$Ty>(code.reccomended_array_size());
 
-			execenv
-				.run(&code)
-				.map_err(|e| {
-					eprintln!("\u{1b}[91mERROR\u{1b}[0m: {}", e);
-					std::process::exit(1)
-				})
-				.unwrap();
+					execenv
+						.run(&code)
+						.map_err(|e| {
+							eprintln!("\u{1b}[91mERROR\u{1b}[0m: {}", e);
+							std::process::exit(1)
+						})
+						.unwrap();
+				},
+        Output::Render => {
+
+          code.render_c(io::BufWriter::new(io::stdout())).unwrap();
+
+        },
+			}
 		}};
 	}
 

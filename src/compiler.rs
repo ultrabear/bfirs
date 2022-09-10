@@ -1,3 +1,4 @@
+use std::io;
 use std::num::NonZeroU32;
 use thiserror::Error;
 
@@ -109,6 +110,53 @@ macro_rules! make_optimizable {
 make_optimizable!(u8);
 make_optimizable!(u16);
 make_optimizable!(u32);
+
+macro_rules! render_c {
+
+  ($Ty:ty, $CINT:expr) => {
+
+    impl BfInstructionStream<$Ty> {
+      /// renders this instruction stream to a writer in c
+      pub fn render_c(&self, mut out: impl io::Write) -> io::Result<()> {
+        let opening_brace = '{';
+        let closing_brace = '}';
+        let array_init = "{0,}";
+
+        write!(out, "#include <stdio.h>\n#define ARRSIZE {}\nint main() {opening_brace}\n{} arr[ARRSIZE] = {array_init};\n{}* a = arr;\n", self.1, $CINT, $CINT)?;
+
+        for i in self.0.iter() {
+          use BfInstruc::*;
+
+          match i {
+            Zero => write!(out, "*a = 0;"),
+            Inc => write!(out, "++*a;"),
+            Dec => write!(out, "--*a;"),
+            IncPtr => write!(out, "++a;"),
+            DecPtr => write!(out, "--a;"),
+            Write => write!(out, "fputc(*a, stdout);"),
+            Read => write!(out, "*a = fgetc(stdin); if (feof(stdin)) *a = 0;"),
+            LStart(_) => write!(out, "while (*a != 0) {opening_brace}"),
+            LEnd(_) => write!(out, "{closing_brace}"),
+            IncBy(amount) => write!(out, "*a += {amount};"),
+            DecBy(amount) => write!(out, "*a -= {amount};"),
+            IncPtrBy(amount) => write!(out, "a += {amount};"),
+            DecPtrBy(amount) => write!(out, "a -= {amount};"),
+          }?;
+
+          write!(out, "\n")?;
+        }
+
+        write!(out, "{closing_brace}")
+      }
+    }
+
+  };
+
+}
+
+render_c!(u8, "unsigned char");
+render_c!(u16, "unsigned short");
+render_c!(u32, "unsigned int");
 
 pub struct BfInstructionStream<T>(Vec<BfInstruc<T>>, usize);
 

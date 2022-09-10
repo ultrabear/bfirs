@@ -130,6 +130,17 @@ impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
 			.build()
 			.unwrap()
 	}
+
+	pub fn new_stdio_locked<'i, 'o, T: Clone + Default>(
+		array_len: usize,
+	) -> BrainFuckExecutor<T, io::StdinLock<'i>, io::StdoutLock<'o>> {
+		BrainFuckExecutorBuilder::new()
+			.stream_in(io::stdin().lock())
+			.stream_out(io::stdout().lock())
+			.array_len(array_len)
+			.build()
+			.unwrap()
+	}
 }
 
 #[derive(Debug)]
