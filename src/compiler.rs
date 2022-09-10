@@ -55,7 +55,7 @@ impl<T> BfInstruc<T> {
 
         let rem_v = <T as Into<u32>>::into(T::MAX).checked_add(1);
 
-        let loop_use = rem_v.map(|rem| v % rem).unwrap_or(v);
+        let loop_use = rem_v.map_or(v, |rem| v % rem);
 
         Some(match self {
             Inc => IncBy(
@@ -117,6 +117,9 @@ macro_rules! render_c {
 
     impl BfInstructionStream<$Ty> {
       /// renders this instruction stream to a writer in c
+      ///
+      /// # Errors
+      /// This function returns any errors raised by the `out` parameter
       pub fn render_c(&self, mut out: impl io::Write) -> io::Result<()> {
         let opening_brace = '{';
         let closing_brace = '}';
@@ -161,6 +164,10 @@ render_c!(u32, "unsigned int");
 pub struct BfInstructionStream<T>(Vec<BfInstruc<T>>, usize);
 
 impl<T: BfOptimizable> BfInstructionStream<T> {
+    /// Returns a brainfuck stream fully optimized and run ready from brainfuck text
+    ///
+    /// # Errors
+    /// This function will error if while compiling the loop instructions are malformed by having a mismatched count or by having a loop end instruction without a start instruction
     pub fn optimized_from_text(v: impl Iterator<Item = u8>) -> Result<Self, BfCompError> {
         let mut new = Self(Self::bf_to_stream(v), 0);
 
@@ -192,6 +199,7 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
     }
 
     /// returns a statically guessed array size that would work best for this brainfuck stream
+    #[must_use]
     pub fn reccomended_array_size(&self) -> usize {
         self.1
     }
@@ -218,7 +226,7 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
                     newlen += 1;
                 } else {
                     stream[newlen] = stream[i].as_multi_with(ctr).unwrap();
-                    newlen += 1
+                    newlen += 1;
                 }
             } else {
                 stream[newlen] = stream[i].clone();
@@ -242,11 +250,11 @@ impl<T> BfInstructionStream<T> {
     where
         T: Eq + Clone,
     {
-        let v = &mut self.0;
+        use BfInstruc::*;
 
         const OPT_COUNT: usize = 2;
 
-        use BfInstruc::*;
+        let v = &mut self.0;
 
         let static_tree: [(&[BfInstruc<T>], BfInstruc<T>); OPT_COUNT] = [
             (&[LStart(0), Dec, LEnd(0)], Zero),
@@ -306,14 +314,20 @@ impl<T> BfInstructionStream<T> {
         let stream = &mut self.0;
 
         for idx in 0..stream.len() {
+            // will not panic as we are iterating the stream length and never truncating
+            #[allow(clippy::match_on_vec_items)]
             match stream[idx] {
                 BfInstruc::LStart(_) => {
                     stack.push(idx);
                 }
                 BfInstruc::LEnd(_) => {
                     if let Some(v) = stack.pop() {
-                        stream[v] = BfInstruc::LStart(idx as u32);
-                        stream[idx] = BfInstruc::LEnd(v as u32);
+                        stream[v] = BfInstruc::LStart(
+                            u32::try_from(idx).expect("u32 overflowed size of usize"),
+                        );
+                        stream[idx] = BfInstruc::LEnd(
+                            u32::try_from(v).expect("u32 overflowed size of usize"),
+                        );
                     } else {
                         return Err(BfCompError::LoopEndBeforeLoopStart);
                     }
@@ -347,6 +361,6 @@ impl<T> std::ops::Deref for BfInstructionStream<T> {
     type Target = [BfInstruc<T>];
 
     fn deref(&self) -> &Self::Target {
-        self.0.deref()
+        &self.0
     }
 }

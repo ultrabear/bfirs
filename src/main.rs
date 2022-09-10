@@ -1,4 +1,5 @@
 #![deny(clippy::pedantic)]
+#![allow(clippy::enum_glob_use)]
 
 use std::io;
 
@@ -82,11 +83,11 @@ fn get_bf_from_argh() -> (Mode, Output, Vec<u8>) {
 }
 
 fn main() {
-    let (mode, output, code) = get_bf_from_argh();
+    let (mode, output, codestream) = get_bf_from_argh();
 
     macro_rules! run_different_sizes {
         ($Ty:ty) => {{
-            let code = BfInstructionStream::optimized_from_text(code.into_iter())
+            let code = BfInstructionStream::optimized_from_text(codestream.into_iter())
                 .map_err(|e| {
                     eprintln!("\u{1b}[91mERROR\u{1b}[0m: {}", e);
                     std::process::exit(1)
