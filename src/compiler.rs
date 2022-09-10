@@ -44,7 +44,7 @@ impl<T> TryFrom<u8> for BfInstruc<T> {
 }
 
 impl<T> BfInstruc<T> {
-    fn as_multi_with(&self, v: u32) -> Option<BfInstruc<T>>
+    fn as_multi_with(&self, v: u32) -> Option<Self>
     where
         T: BfOptimizable,
     {
@@ -53,7 +53,7 @@ impl<T> BfInstruc<T> {
         // this will actually overflow on a maxxed out u32, to combat this we limit the max size of a stream to around 2 billion instructions
         // security as layers, or something
 
-        let rem_v = <T as Into<u32>>::into(T::MAX).checked_add(1);
+        let rem_v = T::MAX.into().checked_add(1);
 
         let loop_use = rem_v.map_or(v, |rem| v % rem);
 
@@ -223,16 +223,14 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
 
                 if ctr == 1 {
                     stream[newlen] = stream[i].clone();
-                    newlen += 1;
                 } else {
                     stream[newlen] = stream[i].as_multi_with(ctr).unwrap();
-                    newlen += 1;
                 }
             } else {
                 stream[newlen] = stream[i].clone();
-                newlen += 1;
             }
 
+            newlen += 1;
             i += 1;
         }
 

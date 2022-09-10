@@ -31,7 +31,7 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> Default for BrainFuckExecuto
 impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
 
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             stdout: None,
             stdin: None,
@@ -87,21 +87,21 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, 
     }
 
     #[must_use]
-    pub fn array_len(mut self, v: usize) -> Self {
+    pub const fn array_len(mut self, v: usize) -> Self {
         self.array_len = Some(v);
 
         self
     }
 
     #[must_use]
-    pub fn starting_ptr(mut self, ptr: usize) -> Self {
+    pub const fn starting_ptr(mut self, ptr: usize) -> Self {
         self.starting_ptr = Some(ptr);
 
         self
     }
 
     #[must_use]
-    pub fn limit(mut self, limit: u64) -> Self {
+    pub const fn limit(mut self, limit: u64) -> Self {
         self.instruction_limit = Some(limit);
 
         self
@@ -181,11 +181,11 @@ impl<T, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
         Ok(())
     }
 
-    pub fn instructions_left(&self) -> u64 {
+    pub const fn instructions_left(&self) -> u64 {
         self.instruction_limit
     }
 
-    pub fn state(&self) -> (usize, &[T]) {
+    pub const fn state(&self) -> (usize, &[T]) {
         (self.ptr, &self.data)
     }
 
