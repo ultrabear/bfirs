@@ -1,3 +1,5 @@
+#![deny(clippy::pedantic)]
+
 use std::io;
 
 pub mod compiler;
@@ -69,7 +71,7 @@ fn get_bf_from_argh() -> (Mode, Output, Vec<u8>) {
                 .unwrap(),
         );
 
-        code_f.bytes().filter_map(|r| r.ok()).collect()
+        code_f.bytes().filter_map(Result::ok).collect()
     } else if let Some(v) = res.args {
         v.bytes().collect()
     } else {
@@ -113,13 +115,13 @@ fn main() {
 
     match mode {
         Mode::U8 => {
-            run_different_sizes!(u8)
+            run_different_sizes!(u8);
         }
         Mode::U16 => {
-            run_different_sizes!(u16)
+            run_different_sizes!(u16);
         }
         Mode::U32 => {
-            run_different_sizes!(u32)
+            run_different_sizes!(u32);
         }
     }
 }
