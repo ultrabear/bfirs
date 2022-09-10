@@ -105,12 +105,10 @@ fn main() {
 							std::process::exit(1)
 						})
 						.unwrap();
-				},
-        Output::Render => {
-
-          code.render_c(io::BufWriter::new(io::stdout())).unwrap();
-
-        },
+				}
+				Output::Render => {
+					code.render_c(io::BufWriter::new(io::stdout())).unwrap();
+				}
 			}
 		}};
 	}
