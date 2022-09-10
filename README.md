@@ -1,4 +1,4 @@
-# bfirs
+# ultrabear/bfirs
 A rust port of [ultrabear/bfi](https://github.com/ultrabear/bfi)  
 This implementation is faster than bfi and served as a tool to better learn rust as a language. It uses the same algorithms from the go version with some tweaking to work in the context of rust.
 # Installing
