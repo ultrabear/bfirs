@@ -332,23 +332,11 @@ macro_rules! impl_brainfuck_run {
                 self.internal_run::<true>(stream)
             }
 
-            /// provides a calculated at runtime estimate of instruction throughput for the given mode using 10k iterations,
+            /// provides a calculated at runtime estimate of instruction throughput for the given mode using 100k iterations,
             /// does not take cache locality into account so will likely return higher numbers than real world data
             #[must_use]
             pub fn estimate_instructions_per_second() -> u128 {
-                const SAMPLE: u32 = 100_000;
-
-                let mut exec = BrainFuckExecutorBuilder::<$T, io::Empty, io::Sink>::new()
-                    .stream_in(io::empty())
-                    .stream_out(io::sink())
-                    .array_len(2)
-                    .limit(SAMPLE.try_into().unwrap())
-                    .build()
-                    .unwrap();
-
-                let start = time::Instant::now();
-
-                exec.run_limited(&[
+                Self::estimate_instructions_per_second_from_stream(&[
                     BfInstruc::Inc,
                     BfInstruc::LStart(5),
                     BfInstruc::IncPtr,
@@ -358,9 +346,40 @@ macro_rules! impl_brainfuck_run {
                     BfInstruc::DecPtr,
                     BfInstruc::LEnd(1),
                 ])
-                .unwrap_err();
+                .unwrap()
+            }
 
-                (u128::from(SAMPLE) * 1_000_000_000) / start.elapsed().as_nanos()
+            /// Estimates instructions per second from a provided stream, doing up to 100k iterations
+            ///
+            /// # Errors
+            /// This function will error if the passed brainfuck stream causes a underflow or overflow
+            pub fn estimate_instructions_per_second_from_stream(
+                stream: &[BfInstruc<$T>],
+            ) -> Result<u128, BfExecError> {
+                const SAMPLE: u32 = 100_000;
+
+                let mut exec = BrainFuckExecutorBuilder::<$T, io::Empty, io::Sink>::new()
+                    .stream_in(io::empty())
+                    .stream_out(io::sink())
+                    .array_len(30_000)
+                    .limit(SAMPLE.try_into().unwrap())
+                    .build()
+                    .unwrap();
+
+                let start = time::Instant::now();
+
+                if let Err(e) = exec.run_limited(stream) {
+                    match e {
+                        BfExecError::NotEnoughInstructions => {}
+                        v => return Err(v),
+                    }
+                };
+
+                Ok(
+                    (u128::from(SAMPLE - u32::try_from(exec.instructions_left()).unwrap())
+                        * 1_000_000_000)
+                        / start.elapsed().as_nanos(),
+                )
             }
         }
     };
