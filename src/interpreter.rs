@@ -418,22 +418,26 @@ fn test_exec_env() {
         }
     };
 
-    let expect_error = |code: &str, error: BfExecError| {
-        let mut env = BrainFuckExecutor::new_stdio::<u8>(30_000);
+    macro_rules! expect_error {
+        ($s:expr, $err:pat, $rep:expr) => {
+            let mut env = BrainFuckExecutor::new_stdio::<u8>(30_000);
 
-        env.add_instruction_limit(1_000_000).unwrap();
+            env.add_instruction_limit(1_000_000).unwrap();
 
-        match env.run_limited(&parse_bf(code)) {
-            Ok(_) => panic!("Got Ok(()) value, expected {:?}", error),
-            Err(err) if err.to_string() == error.to_string() => (),
-            Err(err) => panic!("Got {:?} value, expected {:?}", err, error),
-        }
-    };
+            match env.run_limited(&parse_bf($s)) {
+                Ok(_) => panic!("Got Ok(()) value, expected {:?}", $rep),
+                Err(err) => match err {
+                    $err => (),
+                    e => panic!("Got {:?} value, expected {:?}", e, $rep),
+                },
+            };
+        };
+    }
 
     expect_output("++++[>++++[>++++<-]<-]>>+.", "A");
-    expect_error("<", BfExecError::Underflow);
-    expect_error("+[>+]", BfExecError::Overflow);
-    expect_error("+[]", BfExecError::NotEnoughInstructions);
+    expect_error!("<", BfExecError::Underflow, BfExecError::Underflow);
+    expect_error!("+[>+]", BfExecError::Overflow, BfExecError::Overflow);
+    expect_error!("+[]", BfExecError::NotEnoughInstructions, BfExecError::NotEnoughInstructions);
     run_code("-");
     run_code(">>");
 }
