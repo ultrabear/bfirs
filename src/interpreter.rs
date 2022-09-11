@@ -29,7 +29,6 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> Default for BrainFuckExecuto
 }
 
 impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
-
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -171,7 +170,6 @@ impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
 pub struct Overflow;
 
 impl<T, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
-  
     /// Adds to instruction limit that is decremented each time `run_limited` is run
     ///
     /// # Errors
@@ -371,3 +369,52 @@ macro_rules! impl_brainfuck_run {
 impl_brainfuck_run!(u8);
 impl_brainfuck_run!(u16);
 impl_brainfuck_run!(u32);
+
+#[test]
+fn test_exec_env() {
+    use super::compiler::BfInstructionStream;
+
+    let parse_bf = |code: &str| BfInstructionStream::optimized_from_text(code.bytes()).unwrap();
+
+    let run_code = |x: &str| {
+        let mut env = BrainFuckExecutor::new_stdio::<u8>(30_000);
+
+        env.run(&parse_bf(x)).unwrap();
+    };
+
+    let expect_output = |code: &str, expect: &str| {
+        let mut outv = Vec::new();
+
+        let mut env = BrainFuckExecutorBuilder::<u8, _, _>::new()
+            .stream_in(io::empty())
+            .stream_out(&mut outv)
+            .array_len(30_000)
+            .build()
+            .unwrap();
+
+        env.run(&parse_bf(code)).unwrap();
+
+        if outv != expect.as_bytes() {
+            panic!("Expected {}, got instead {:?}", expect, outv);
+        }
+    };
+
+    let expect_error = |code: &str, error: BfExecError| {
+        let mut env = BrainFuckExecutor::new_stdio::<u8>(30_000);
+
+        env.add_instruction_limit(1_000_000).unwrap();
+
+        match env.run_limited(&parse_bf(code)) {
+            Ok(_) => panic!("Got Ok(()) value, expected {:?}", error),
+            Err(err) if err.to_string() == error.to_string() => (),
+            Err(err) => panic!("Got {:?} value, expected {:?}", err, error),
+        }
+    };
+
+    expect_output("++++[>++++[>++++<-]<-]>>+.", "A");
+    expect_error("<", BfExecError::Underflow);
+    expect_error("+[>+]", BfExecError::Overflow);
+    expect_error("+[]", BfExecError::NotEnoughInstructions);
+    run_code("-");
+    run_code(">>");
+}
