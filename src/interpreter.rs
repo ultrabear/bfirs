@@ -437,7 +437,11 @@ fn test_exec_env() {
     expect_output("++++[>++++[>++++<-]<-]>>+.", "A");
     expect_error!("<", BfExecError::Underflow, BfExecError::Underflow);
     expect_error!("+[>+]", BfExecError::Overflow, BfExecError::Overflow);
-    expect_error!("+[]", BfExecError::NotEnoughInstructions, BfExecError::NotEnoughInstructions);
+    expect_error!(
+        "+[]",
+        BfExecError::NotEnoughInstructions,
+        BfExecError::NotEnoughInstructions
+    );
     run_code("-");
     run_code(">>");
 }
