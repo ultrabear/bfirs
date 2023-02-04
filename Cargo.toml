@@ -5,6 +5,13 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+
 [dependencies]
 thiserror = "1.0"
 strum = "0.24"
@@ -12,7 +19,3 @@ strum_macros = "0.24"
 argh = "0.1"
 
 
-[profile.release-lto]
-inherits = "release"
-lto = true
-strip = "symbols"
