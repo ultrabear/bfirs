@@ -125,7 +125,7 @@ macro_rules! render_c {
         let closing_brace = '}';
         let array_init = "{0,}";
 
-        write!(out, "#include <stdio.h>\n#define ARRSIZE {}\nint main() {opening_brace}\n{} arr[ARRSIZE] = {array_init};\n{}*restrict a = arr;\n", self.1, $CINT, $CINT)?;
+        write!(out, "#include <stdio.h>\n#define ARRSIZE {}\nint main() {opening_brace}\n{} arr[ARRSIZE] = {array_init};\n{}* restrict a = arr;\n", self.1, $CINT, $CINT)?;
 
         for i in self.0.iter() {
           use BfInstruc::*;
@@ -149,7 +149,7 @@ macro_rules! render_c {
           write!(out, "\n")?;
         }
 
-        write!(out, "{closing_brace}")
+        writeln!(out, "{closing_brace}")
       }
     }
 
