@@ -2,4 +2,4 @@ build:
 	cargo build --release --locked
 
 install:
-	cargo install --path . --release --locked
+	cargo install --path . --locked
