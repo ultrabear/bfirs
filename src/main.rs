@@ -66,7 +66,7 @@ fn get_bf_from_argh() -> (Mode, Output, Vec<u8>) {
         let code_f = io::BufReader::new(
             File::open(&v)
                 .map_err(|_| {
-                    eprintln!("\u{1b}[91mERROR\u{1b}[0m: Could not open file: {}", v);
+                    eprintln!("\u{1b}[91mERROR\u{1b}[0m: Could not open file: {v}");
                     std::process::exit(1)
                 })
                 .unwrap(),
