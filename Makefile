@@ -1,5 +1,5 @@
 build:
-	cargo build --profile release-lto --locked
+	cargo build --release --locked
 
 install:
-	cargo install --path . --profile release-lto --locked
+	cargo install --path . --release --locked
