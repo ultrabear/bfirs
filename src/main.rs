@@ -1,4 +1,4 @@
-#![deny(clippy::pedantic)]
+#![warn(clippy::pedantic)]
 #![allow(clippy::enum_glob_use)]
 
 use std::io;

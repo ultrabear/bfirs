@@ -1,6 +1,8 @@
+use core::fmt;
 use std::io;
 use std::num::NonZeroU32;
 use thiserror::Error;
+use usize_cast::IntoUsize;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -94,72 +96,92 @@ pub enum BfCompError {
 }
 
 pub trait BfOptimizable:
-    Clone + Eq + Into<u32> + TryFrom<u32> + Ord + std::ops::Rem<Self, Output = Self>
+    Copy
+    + Clone
+    + Eq
+    + Into<u32>
+    + TryFrom<u32>
+    + From<u8>
+    + Ord
+    + std::ops::Rem<Self, Output = Self>
+    + fmt::Display
 {
     const MAX: Self;
+    const ZERO: Self;
+    const C_INT_NAME: &'static str;
+
+    #[must_use]
+    fn wrapping_add(self, other: Self) -> Self;
+    #[must_use]
+    fn wrapping_sub(self, other: Self) -> Self;
+
+    #[must_use]
+    fn truncate_u8(self) -> u8;
 }
 
 macro_rules! make_optimizable {
-    ($Ty:ty) => {
+    ($Ty:ty, $c_int:expr) => {
         impl BfOptimizable for $Ty {
-            const MAX: $Ty = <$Ty>::MAX;
+            const MAX: Self = Self::MAX;
+            const ZERO: Self = 0;
+            const C_INT_NAME: &'static str = $c_int;
+
+            fn wrapping_add(self, other: Self) -> Self {
+                self.wrapping_add(other)
+            }
+
+            fn wrapping_sub(self, other: Self) -> Self {
+                self.wrapping_sub(other)
+            }
+
+            fn truncate_u8(self) -> u8 {
+                self as u8
+            }
         }
     };
 }
 
-make_optimizable!(u8);
-make_optimizable!(u16);
-make_optimizable!(u32);
+make_optimizable!(u8, "unsigned char");
+make_optimizable!(u16, "unsigned short");
+make_optimizable!(u32, "unsigned int");
 
-macro_rules! render_c {
-
-  ($Ty:ty, $CINT:expr) => {
-
-    impl BfInstructionStream<$Ty> {
-      /// renders this instruction stream to a writer in c
-      ///
-      /// # Errors
-      /// This function returns any errors raised by the `out` parameter
-      pub fn render_c(&self, mut out: impl io::Write) -> io::Result<()> {
+impl<T: BfOptimizable> BfInstructionStream<T> {
+    /// renders this instruction stream to a writer in c
+    ///
+    /// # Errors
+    /// This function returns any errors raised by the `out` parameter
+    pub fn render_c(&self, mut out: impl io::Write) -> io::Result<()> {
         let opening_brace = '{';
         let closing_brace = '}';
         let array_init = "{0,}";
 
-        write!(out, "#include <stdio.h>\n#define ARRSIZE {}\nint main() {opening_brace}\n{} arr[ARRSIZE] = {array_init};\n{}* restrict a = arr;\n", self.1, $CINT, $CINT)?;
+        write!(out, "#include <stdio.h>\n#define ARRSIZE {}\nint main() {opening_brace}\n{} arr[ARRSIZE] = {array_init};\n{}* restrict a = arr;\n", self.1, T::C_INT_NAME, T::C_INT_NAME)?;
 
-        for i in self.0.iter() {
-          use BfInstruc::*;
+        for i in &self.0 {
+            use BfInstruc::*;
 
-          match i {
-            Zero => write!(out, "*a = 0;"),
-            Inc => write!(out, "++*a;"),
-            Dec => write!(out, "--*a;"),
-            IncPtr => write!(out, "++a;"),
-            DecPtr => write!(out, "--a;"),
-            Write => write!(out, "fputc(*a, stdout);"),
-            Read => write!(out, "*a = fgetc(stdin); if (feof(stdin)) *a = 0;"),
-            LStart(_) => write!(out, "while (*a != 0) {opening_brace}"),
-            LEnd(_) => write!(out, "{closing_brace}"),
-            IncBy(amount) => write!(out, "*a += {amount};"),
-            DecBy(amount) => write!(out, "*a -= {amount};"),
-            IncPtrBy(amount) => write!(out, "a += {amount};"),
-            DecPtrBy(amount) => write!(out, "a -= {amount};"),
-          }?;
+            match i {
+                Zero => write!(out, "*a = 0;"),
+                Inc => write!(out, "++*a;"),
+                Dec => write!(out, "--*a;"),
+                IncPtr => write!(out, "++a;"),
+                DecPtr => write!(out, "--a;"),
+                Write => write!(out, "fputc(*a, stdout);"),
+                Read => write!(out, "*a = fgetc(stdin); if (feof(stdin)) *a = 0;"),
+                LStart(_) => write!(out, "while (*a != 0) {opening_brace}"),
+                LEnd(_) => write!(out, "{closing_brace}"),
+                IncBy(amount) => write!(out, "*a += {amount};"),
+                DecBy(amount) => write!(out, "*a -= {amount};"),
+                IncPtrBy(amount) => write!(out, "a += {amount};"),
+                DecPtrBy(amount) => write!(out, "a -= {amount};"),
+            }?;
 
-          write!(out, "\n")?;
+            writeln!(out)?;
         }
 
         writeln!(out, "{closing_brace}")
-      }
     }
-
-  };
-
 }
-
-render_c!(u8, "unsigned char");
-render_c!(u16, "unsigned short");
-render_c!(u32, "unsigned int");
 
 pub struct BfInstructionStream<T>(Vec<BfInstruc<T>>, usize);
 
@@ -182,9 +204,7 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
             })
             .max(30_000);
 
-        new.1 = array_len
-            .try_into()
-            .expect("16 bit platforms not supported");
+        new.1 = array_len.into_usize();
 
         if new.len() > (isize::MAX as usize) {
             return Err(BfCompError::Overflow);
@@ -222,12 +242,12 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
                 }
 
                 if ctr == 1 {
-                    stream[newlen] = stream[i].clone();
+                    stream[newlen] = stream[i];
                 } else {
                     stream[newlen] = stream[i].as_multi_with(ctr).unwrap();
                 }
             } else {
-                stream[newlen] = stream[i].clone();
+                stream[newlen] = stream[i];
             }
 
             newlen += 1;
@@ -321,10 +341,10 @@ impl<T> BfInstructionStream<T> {
                 BfInstruc::LEnd(_) => {
                     if let Some(v) = stack.pop() {
                         stream[v] = BfInstruc::LStart(
-                            u32::try_from(idx).expect("u32 overflowed size of usize"),
+                            u32::try_from(idx).expect("u32 overflowed casting from usize"),
                         );
                         stream[idx] = BfInstruc::LEnd(
-                            u32::try_from(v).expect("u32 overflowed size of usize"),
+                            u32::try_from(v).expect("u32 overflowed casting from usize"),
                         );
                     } else {
                         return Err(BfCompError::LoopEndBeforeLoopStart);

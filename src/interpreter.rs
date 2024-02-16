@@ -1,6 +1,8 @@
 use std::io;
 use thiserror::Error;
 
+use crate::compiler::BfOptimizable;
+
 use super::compiler::BfInstruc;
 
 #[derive(Error, Debug, Copy, Clone)]
@@ -196,198 +198,192 @@ impl<T, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     }
 }
 
-macro_rules! impl_brainfuck_run {
-    ($T:ty) => {
-        impl<I: io::Read, O: io::Write> BrainFuckExecutor<$T, I, O> {
-            #[inline]
-            unsafe fn cur_unchecked(&self) -> $T {
-                // SAFETY: The caller has asserted that the current pointer is a valid index
-                debug_assert!(self.ptr < self.data.len());
-                *self.data.get_unchecked(self.ptr)
+impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
+    #[inline]
+    unsafe fn cur_unchecked(&self) -> T {
+        // SAFETY: The caller has asserted that the current pointer is a valid index
+        debug_assert!(self.ptr < self.data.len());
+        *self.data.get_unchecked(self.ptr)
+    }
+
+    #[inline]
+    unsafe fn map_current(&mut self, func: impl FnOnce(T) -> T) {
+        // SAFETY: The caller has asserted that the current pointer is a valid index
+        debug_assert!(self.ptr < self.data.len());
+        *self.data.get_unchecked_mut(self.ptr) = func(self.cur_unchecked());
+    }
+
+    #[inline]
+    fn inc_ptr_by(&mut self, v: usize) -> Result<(), BfExecError> {
+        self.ptr += v;
+        if self.ptr >= self.data.len() {
+            self.ptr -= v;
+            return Err(BfExecError::Overflow);
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn dec_ptr_by(&mut self, v: usize) -> Result<(), BfExecError> {
+        self.ptr = self.ptr.checked_sub(v).ok_or(BfExecError::Underflow)?;
+        Ok(())
+    }
+
+    #[inline]
+    fn write(&mut self, v: u8) -> Result<(), BfExecError> {
+        let _ = self.stdout.write(&[v])?;
+
+        // based on 60 fps update (actual 62.5)
+        if self.last_flush.elapsed().as_millis() > 16 {
+            self.stdout.flush()?;
+            self.last_flush = time::Instant::now();
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    fn read(&mut self) -> Result<u8, BfExecError> {
+        let mut v = [0];
+        let _ = self.stdin.read(&mut v)?;
+        Ok(v[0])
+    }
+
+    fn internal_run<const LIMIT_INSTRUCTIONS: bool>(
+        &mut self,
+        stream: &[BfInstruc<T>],
+    ) -> Result<(), BfExecError> {
+        use BfInstruc::*;
+
+        let mut idx = 0usize;
+        let len = stream.len();
+
+        // SAFETY: check ptr bounds now to ensure they are valid before a _unchecked op is called without a ptr mutating op
+        if self.ptr >= self.data.len() {
+            return Err(BfExecError::InitOverflow);
+        }
+
+        if LIMIT_INSTRUCTIONS && self.instruction_limit == 0 {
+            return Err(BfExecError::NotEnoughInstructions);
+        }
+
+        // SAFETY: `ptr` bounds are checked by `ptr` mutating operations, so it will remain valid within this function
+        while idx < len {
+            if LIMIT_INSTRUCTIONS && self.instruction_limit == 0 {
+                return Err(BfExecError::NotEnoughInstructions);
             }
 
-            #[inline]
-            unsafe fn map_current(&mut self, func: impl FnOnce($T) -> $T) {
-                // SAFETY: The caller has asserted that the current pointer is a valid index
-                debug_assert!(self.ptr < self.data.len());
-                *self.data.get_unchecked_mut(self.ptr) = func(self.cur_unchecked());
-            }
-
-            #[inline]
-            fn inc_ptr_by(&mut self, v: usize) -> Result<(), BfExecError> {
-                self.ptr += v;
-                if self.ptr >= self.data.len() {
-                    self.ptr -= v;
-                    return Err(BfExecError::Overflow);
-                }
-                Ok(())
-            }
-
-            #[inline]
-            fn dec_ptr_by(&mut self, v: usize) -> Result<(), BfExecError> {
-                self.ptr = self.ptr.checked_sub(v).ok_or(BfExecError::Underflow)?;
-                Ok(())
-            }
-
-            #[inline]
-            fn write(&mut self, v: u8) -> Result<(), BfExecError> {
-                let _ = self.stdout.write(&[v])?;
-
-                // based on 60 fps update (actual 62.5)
-                if self.last_flush.elapsed().as_millis() > 16 {
-                    self.stdout.flush()?;
-                    self.last_flush = time::Instant::now();
-                }
-
-                Ok(())
-            }
-
-            #[inline]
-            fn read(&mut self) -> Result<u8, BfExecError> {
-                let mut v = [0 as u8];
-                let _ = self.stdin.read(&mut v)?;
-                Ok(v[0])
-            }
-
-            fn internal_run<const LIMIT_INSTRUCTIONS: bool>(
-                &mut self,
-                stream: &[BfInstruc<$T>],
-            ) -> Result<(), BfExecError> {
-                use BfInstruc::*;
-
-                let mut idx = 0usize;
-                let len = stream.len();
-
-                // SAFETY: check ptr bounds now to ensure they are valid before a _unchecked op is called without a ptr mutating op
-                if self.ptr >= self.data.len() {
-                    return Err(BfExecError::InitOverflow);
-                }
-
-                if LIMIT_INSTRUCTIONS {
-                    if self.instruction_limit == 0 {
-                        return Err(BfExecError::NotEnoughInstructions);
+            unsafe {
+                match stream[idx] {
+                    Zero => self.map_current(|_| T::ZERO),
+                    Inc => self.map_current(|c| c.wrapping_add(T::from(1))),
+                    Dec => self.map_current(|c| c.wrapping_sub(T::from(1))),
+                    IncPtr => self.inc_ptr_by(1)?,
+                    DecPtr => self.dec_ptr_by(1)?,
+                    Write => self.write(self.cur_unchecked().truncate_u8())?,
+                    Read => {
+                        let v = self.read()?.into();
+                        self.map_current(|_| v);
                     }
-                }
-
-                // SAFETY: `ptr` bounds are checked by `ptr` mutating operations, so it will remain valid within this function
-                while idx < len {
-                    if LIMIT_INSTRUCTIONS && self.instruction_limit == 0 {
-                        return Err(BfExecError::NotEnoughInstructions);
-                    }
-
-                    unsafe {
-                        match stream[idx] {
-                            Zero => self.map_current(|_| 0),
-                            Inc => self.map_current(|c| c.wrapping_add(1)),
-                            Dec => self.map_current(|c| c.wrapping_sub(1)),
-                            IncPtr => self.inc_ptr_by(1)?,
-                            DecPtr => self.dec_ptr_by(1)?,
-                            Write => self.write(self.cur_unchecked() as u8)?,
-                            Read => {
-                                let v = self.read()? as $T;
-                                self.map_current(|_| v);
-                            }
-                            LStart(end) => {
-                                if self.cur_unchecked() == 0 {
-                                    idx = end as usize;
-                                }
-                            }
-                            LEnd(start) => {
-                                if self.cur_unchecked() != 0 {
-                                    idx = start as usize;
-                                }
-                            }
-                            IncBy(val) => self.map_current(|c| c.wrapping_add(val)),
-                            DecBy(val) => self.map_current(|c| c.wrapping_sub(val)),
-                            IncPtrBy(val) => self.inc_ptr_by(val.get() as usize)?,
-                            DecPtrBy(val) => self.dec_ptr_by(val.get() as usize)?,
+                    LStart(end) => {
+                        if self.cur_unchecked() == T::ZERO {
+                            idx = end as usize;
                         }
                     }
-
-                    idx += 1;
-
-                    if LIMIT_INSTRUCTIONS {
-                        self.instruction_limit -= 1;
+                    LEnd(start) => {
+                        if self.cur_unchecked() != T::ZERO {
+                            idx = start as usize;
+                        }
                     }
+                    IncBy(val) => self.map_current(|c| c.wrapping_add(val)),
+                    DecBy(val) => self.map_current(|c| c.wrapping_sub(val)),
+                    IncPtrBy(val) => self.inc_ptr_by(val.get() as usize)?,
+                    DecPtrBy(val) => self.dec_ptr_by(val.get() as usize)?,
                 }
-
-                Ok(())
             }
 
-            /// Runs brainfuck stream unbounded, this function is not guaranteed to halt.
-            ///
-            /// # Errors
-            /// This function will error if there is an error in the in/out streams or if the data pointer overflows/underflows.
-            pub fn run(&mut self, stream: &[BfInstruc<$T>]) -> Result<(), BfExecError> {
-                self.internal_run::<false>(stream)
-            }
+            idx += 1;
 
-            /// Runs brainfuck with a limited instruction count specified by [`BrainFuckExecutor::instructions_left`], this function will eventually halt.
-            ///
-            /// If the brainfuck finishes executing without reaching the limit, the leftover instructions will be kept in instructions left, while if it errors instructions left will be zero.
-            ///
-            /// # Errors
-            /// This function will error if there is an error in the in/out streams, if the data pointer overflows/underflows, or if the instruction limit is reached before execution ends.
-            pub fn run_limited(&mut self, stream: &[BfInstruc<$T>]) -> Result<(), BfExecError> {
-                self.internal_run::<true>(stream)
-            }
-
-            /// provides a calculated at runtime estimate of instruction throughput for the given mode using 100k iterations,
-            /// does not take cache locality into account so will likely return higher numbers than real world data
-            #[must_use]
-            pub fn estimate_instructions_per_second() -> u128 {
-                Self::estimate_instructions_per_second_from_stream(&[
-                    BfInstruc::Inc,
-                    BfInstruc::LStart(5),
-                    BfInstruc::IncPtr,
-                    BfInstruc::Dec,
-                    BfInstruc::Dec,
-                    BfInstruc::IncBy(4),
-                    BfInstruc::DecPtr,
-                    BfInstruc::LEnd(1),
-                ])
-                .unwrap()
-            }
-
-            /// Estimates instructions per second from a provided stream, doing up to 100k iterations
-            ///
-            /// # Errors
-            /// This function will error if the passed brainfuck stream causes a underflow or overflow
-            pub fn estimate_instructions_per_second_from_stream(
-                stream: &[BfInstruc<$T>],
-            ) -> Result<u128, BfExecError> {
-                const SAMPLE: u32 = 100_000;
-
-                let mut exec = BrainFuckExecutorBuilder::<$T, io::Empty, io::Sink>::new()
-                    .stream_in(io::empty())
-                    .stream_out(io::sink())
-                    .array_len(30_000)
-                    .limit(SAMPLE.try_into().unwrap())
-                    .build()
-                    .unwrap();
-
-                let start = time::Instant::now();
-
-                if let Err(e) = exec.run_limited(stream) {
-                    match e {
-                        BfExecError::NotEnoughInstructions => {}
-                        v => return Err(v),
-                    }
-                };
-
-                Ok(
-                    (u128::from(SAMPLE - u32::try_from(exec.instructions_left()).unwrap())
-                        * 1_000_000_000)
-                        / start.elapsed().as_nanos(),
-                )
+            if LIMIT_INSTRUCTIONS {
+                self.instruction_limit -= 1;
             }
         }
-    };
-}
 
-impl_brainfuck_run!(u8);
-impl_brainfuck_run!(u16);
-impl_brainfuck_run!(u32);
+        Ok(())
+    }
+
+    /// Runs brainfuck stream unbounded, this function is not guaranteed to halt.
+    ///
+    /// # Errors
+    /// This function will error if there is an error in the in/out streams or if the data pointer overflows/underflows.
+    pub fn run(&mut self, stream: &[BfInstruc<T>]) -> Result<(), BfExecError> {
+        self.internal_run::<false>(stream)
+    }
+
+    /// Runs brainfuck with a limited instruction count specified by [`BrainFuckExecutor::instructions_left`], this function will eventually halt.
+    ///
+    /// If the brainfuck finishes executing without reaching the limit, the leftover instructions will be kept in instructions left, while if it errors instructions left will be zero.
+    ///
+    /// # Errors
+    /// This function will error if there is an error in the in/out streams, if the data pointer overflows/underflows, or if the instruction limit is reached before execution ends.
+    pub fn run_limited(&mut self, stream: &[BfInstruc<T>]) -> Result<(), BfExecError> {
+        self.internal_run::<true>(stream)
+    }
+
+    /// provides a calculated at runtime estimate of instruction throughput for the given mode using 100k iterations,
+    /// does not take cache locality into account so will likely return higher numbers than real world data
+    #[must_use]
+    // this will not panic: the instructions will infinitely loop without overflowing or
+    // underflowing the pointer
+    #[allow(clippy::missing_panics_doc)]
+    pub fn estimate_instructions_per_second() -> u128 {
+        Self::estimate_instructions_per_second_from_stream(&[
+            BfInstruc::Inc,
+            BfInstruc::LStart(5),
+            BfInstruc::IncPtr,
+            BfInstruc::Dec,
+            BfInstruc::Dec,
+            BfInstruc::IncBy(T::from(4)),
+            BfInstruc::DecPtr,
+            BfInstruc::LEnd(1),
+        ])
+        .unwrap()
+    }
+
+    /// Estimates instructions per second from a provided stream, doing up to 100k iterations
+    ///
+    /// # Errors
+    /// This function will error if the passed brainfuck stream causes a underflow or overflow
+    // this will not panic: all required arguments have been provided to the builder
+    #[allow(clippy::missing_panics_doc)]
+    pub fn estimate_instructions_per_second_from_stream(
+        stream: &[BfInstruc<T>],
+    ) -> Result<u128, BfExecError> {
+        const SAMPLE: u32 = 100_000;
+
+        let mut exec = BrainFuckExecutorBuilder::<T, io::Empty, io::Sink>::new()
+            .stream_in(io::empty())
+            .stream_out(io::sink())
+            .array_len(30_000)
+            .limit(SAMPLE.into())
+            .build()
+            .unwrap();
+
+        let start = time::Instant::now();
+
+        if let Err(e) = exec.run_limited(stream) {
+            match e {
+                BfExecError::NotEnoughInstructions => {}
+                v => return Err(v),
+            }
+        };
+
+        Ok(
+            (u128::from(SAMPLE - u32::try_from(exec.instructions_left()).unwrap()) * 1_000_000_000)
+                / start.elapsed().as_nanos(),
+        )
+    }
+}
 
 #[test]
 fn test_exec_env() {
