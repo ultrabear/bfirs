@@ -77,9 +77,35 @@ impl<T> BfInstruc<T> {
             _ => None?,
         })
     }
+
     fn is_multi_optimizable(&self) -> bool {
         use BfInstruc::*;
         matches!(self, Inc | Dec | IncPtr | DecPtr)
+    }
+
+    fn write_c_for(&self, out: &mut dyn io::Write) -> io::Result<()>
+    where
+        T: fmt::Display,
+    {
+        use BfInstruc::*;
+
+        let opening_brace = '{';
+
+        match self {
+            Zero => write!(out, "*a = 0;"),
+            Inc => write!(out, "++*a;"),
+            Dec => write!(out, "--*a;"),
+            IncPtr => write!(out, "++a;"),
+            DecPtr => write!(out, "--a;"),
+            Write => write!(out, "w(*a);"),
+            Read => write!(out, "r(a);"),
+            LStart(_) => write!(out, "while (*a != 0) {opening_brace}"),
+            LEnd(_) => out.write_all(b"}"),
+            IncBy(amount) => write!(out, "*a += {amount};"),
+            DecBy(amount) => write!(out, "*a -= {amount};"),
+            IncPtrBy(amount) => write!(out, "a += {amount};"),
+            DecPtrBy(amount) => write!(out, "a -= {amount};"),
+        }
     }
 }
 
@@ -105,6 +131,7 @@ pub trait BfOptimizable:
     + Ord
     + std::ops::Rem<Self, Output = Self>
     + fmt::Display
+    + Default
 {
     const MAX: Self;
     const ZERO: Self;
@@ -145,41 +172,124 @@ make_optimizable!(u8, "unsigned char");
 make_optimizable!(u16, "unsigned short");
 make_optimizable!(u32, "unsigned int");
 
+pub struct BfExecState<'a, T: BfOptimizable> {
+    pub cursor: usize,
+    pub data: &'a [T],
+    pub instruction_pointer: Option<usize>,
+}
+
+fn byte_to_hex_literal(b: u8, buf: &mut [u8; 4]) -> &str {
+    const LOOKUP: &[u8] = b"0123456789ABCDEF";
+
+    buf[0] = b'\\';
+    buf[1] = b'x';
+
+    buf[2] = LOOKUP[(b >> 4) as usize];
+    buf[3] = LOOKUP[(b & 0xf) as usize];
+
+    core::str::from_utf8(buf).unwrap()
+}
+
 impl<T: BfOptimizable> BfInstructionStream<T> {
+    fn write_c_header(&self, out: &mut dyn io::Write) -> io::Result<()> {
+        let opening_brace = '{';
+        let array_init = "{0,}";
+
+        writeln!(out, "#include <stdio.h>\n#define ARRSIZE {}", self.1)?;
+
+        writeln!(out, "void w(char v) {{ fputc(v, stdout); }}")?;
+        writeln!(
+            out,
+            "void r({}* a) {{ fflush(stdout); *a = fgetc(stdin); if (feof(stdin)) *a = 0; }}",
+            T::C_INT_NAME
+        )?;
+
+        writeln!(
+            out,
+            "int main() {opening_brace}\n{} arr[ARRSIZE] = {array_init};\n{}* restrict a = arr;",
+            T::C_INT_NAME,
+            T::C_INT_NAME
+        )?;
+
+        Ok(())
+    }
+
     /// renders this instruction stream to a writer in c
     ///
     /// # Errors
     /// This function returns any errors raised by the `out` parameter
     pub fn render_c(&self, mut out: impl io::Write) -> io::Result<()> {
-        let opening_brace = '{';
-        let closing_brace = '}';
-        let array_init = "{0,}";
-
-        write!(out, "#include <stdio.h>\n#define ARRSIZE {}\nint main() {opening_brace}\n{} arr[ARRSIZE] = {array_init};\n{}* restrict a = arr;\n", self.1, T::C_INT_NAME, T::C_INT_NAME)?;
+        self.write_c_header(&mut out)?;
 
         for i in &self.0 {
-            use BfInstruc::*;
-
-            match i {
-                Zero => write!(out, "*a = 0;"),
-                Inc => write!(out, "++*a;"),
-                Dec => write!(out, "--*a;"),
-                IncPtr => write!(out, "++a;"),
-                DecPtr => write!(out, "--a;"),
-                Write => write!(out, "fputc(*a, stdout);"),
-                Read => write!(out, "*a = fgetc(stdin); if (feof(stdin)) *a = 0;"),
-                LStart(_) => write!(out, "while (*a != 0) {opening_brace}"),
-                LEnd(_) => write!(out, "{closing_brace}"),
-                IncBy(amount) => write!(out, "*a += {amount};"),
-                DecBy(amount) => write!(out, "*a -= {amount};"),
-                IncPtrBy(amount) => write!(out, "a += {amount};"),
-                DecPtrBy(amount) => write!(out, "a -= {amount};"),
-            }?;
+            i.write_c_for(&mut out)?;
 
             writeln!(out)?;
         }
 
-        writeln!(out, "{closing_brace}")
+        out.write_all(b"}\n")
+    }
+
+    fn write_bytestring_c(write: &[u8], out: &mut dyn io::Write) -> io::Result<()> {
+        write!(out, "fwrite(\"")?;
+
+        for &c in write {
+            // this is awful it writes octal literals indiscriminately, but it does work every time
+            write!(out, "{}", byte_to_hex_literal(c, &mut [0; 4]))?;
+        }
+
+        writeln!(out, "\", 1, {}, stdout);", write.len())?;
+
+        writeln!(out, "fflush(stdout);")?;
+
+        Ok(())
+    }
+
+    /// Writes C to a file, from a partially computed interpreter state
+    ///
+    /// # Errors
+    /// Errors on any `io::Errors`
+    pub fn render_interpreted_c(
+        &self,
+        state: &BfExecState<T>,
+        written: &[u8],
+        mut out: impl io::Write,
+    ) -> io::Result<()> {
+        self.write_c_header(&mut out)?;
+
+        if !written.is_empty() {
+            Self::write_bytestring_c(written, &mut out)?;
+        }
+
+        if let Some(left_off) = state.instruction_pointer {
+            for (idx, &b) in state.data.iter().enumerate() {
+                if b != T::ZERO {
+                    writeln!(out, "a[{idx}] = {b};")?;
+                }
+            }
+
+            if state.cursor != 0 {
+                writeln!(out, "a += {};", state.cursor)?;
+            }
+
+            if left_off != 0 {
+                writeln!(out, "goto startpos_jump;")?;
+            }
+
+            for (idx, instruc) in self.0.iter().enumerate() {
+                if idx == left_off && left_off != 0 {
+                    writeln!(out, "startpos_jump:")?;
+                }
+
+                instruc.write_c_for(&mut out)?;
+
+                writeln!(out)?;
+            }
+        }
+
+        writeln!(out, "}}")?;
+
+        Ok(())
     }
 }
 
@@ -190,19 +300,23 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
     ///
     /// # Errors
     /// This function will error if while compiling the loop instructions are malformed by having a mismatched count or by having a loop end instruction without a start instruction
-    pub fn optimized_from_text(v: impl Iterator<Item = u8>) -> Result<Self, BfCompError> {
+    pub fn optimized_from_text(
+        v: impl Iterator<Item = u8>,
+        array_len: Option<u32>,
+    ) -> Result<Self, BfCompError> {
         let mut new = Self(Self::bf_to_stream(v), 0);
 
-        let array_len: u32 = new
-            .iter()
-            .fold(0, |accu, x| {
-                if let BfInstruc::IncPtr = x {
-                    accu + 1
-                } else {
-                    accu
-                }
-            })
-            .max(30_000);
+        let array_len: u32 = array_len.unwrap_or_else(|| {
+            new.iter()
+                .fold(0, |accu, x| {
+                    if let BfInstruc::IncPtr = x {
+                        accu + 1
+                    } else {
+                        accu
+                    }
+                })
+                .max(30_000)
+        });
 
         new.1 = array_len.into_usize();
 

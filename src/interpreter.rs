@@ -1,4 +1,5 @@
-use std::io;
+use core::fmt;
+use std::{hint::black_box, io};
 use thiserror::Error;
 
 use crate::compiler::BfOptimizable;
@@ -24,13 +25,13 @@ pub struct BrainFuckExecutorBuilder<T, I, O> {
     instruction_limit: Option<u64>,
 }
 
-impl<T: Clone + Default, I: io::Read, O: io::Write> Default for BrainFuckExecutorBuilder<T, I, O> {
+impl<T: Clone, I: io::Read, O: io::Write> Default for BrainFuckExecutorBuilder<T, I, O> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
+impl<T: Clone, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -47,7 +48,10 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, 
     ///
     /// # Errors
     /// This function will error if no stream in/out is specified or if no array size is specified
-    pub fn build(self) -> Result<BrainFuckExecutor<T, I, O>, ExecutorBuilderError> {
+    pub fn build(self) -> Result<BrainFuckExecutor<T, I, O>, ExecutorBuilderError>
+    where
+        T: Default,
+    {
         use ExecutorBuilderError::{NoArraySize, NoStreamIn, NoStreamOut};
 
         let s_out = self.stdout.ok_or(NoStreamOut)?;
@@ -110,7 +114,19 @@ impl<T: Clone + Default, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, 
 }
 
 #[derive(Debug, Error)]
-pub enum BfExecError {
+pub struct BfExecError {
+    pub source: BfExecErrorTy,
+    pub idx: usize,
+}
+
+impl fmt::Display for BfExecError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&self.source, f)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum BfExecErrorTy {
     #[error("runtime overflowed its backing array")]
     Overflow,
     #[error("runtime underflowed its backing array")]
@@ -130,12 +146,12 @@ where
     O: io::Write,
     I: io::Read,
 {
-    stdout: O,
-    stdin: I,
-    data: Box<[T]>,
-    ptr: usize,
-    last_flush: time::Instant,
-    instruction_limit: u64,
+    pub stdout: O,
+    pub stdin: I,
+    pub data: Box<[T]>,
+    pub ptr: usize,
+    pub last_flush: time::Instant,
+    pub instruction_limit: u64,
 }
 
 impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
@@ -168,8 +184,14 @@ impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub struct Overflow;
+
+impl fmt::Display for Overflow {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "overflow while attempting to add instruction limit")
+    }
+}
 
 impl<T, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     /// Adds to instruction limit that is decremented each time `run_limited` is run
@@ -198,7 +220,7 @@ impl<T, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     }
 }
 
-impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
+impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     #[inline]
     unsafe fn cur_unchecked(&self) -> T {
         // SAFETY: The caller has asserted that the current pointer is a valid index
@@ -214,23 +236,23 @@ impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T,
     }
 
     #[inline]
-    fn inc_ptr_by(&mut self, v: usize) -> Result<(), BfExecError> {
+    fn inc_ptr_by(&mut self, v: usize) -> Result<(), BfExecErrorTy> {
         self.ptr += v;
         if self.ptr >= self.data.len() {
             self.ptr -= v;
-            return Err(BfExecError::Overflow);
+            return Err(BfExecErrorTy::Overflow);
         }
         Ok(())
     }
 
     #[inline]
-    fn dec_ptr_by(&mut self, v: usize) -> Result<(), BfExecError> {
-        self.ptr = self.ptr.checked_sub(v).ok_or(BfExecError::Underflow)?;
+    fn dec_ptr_by(&mut self, v: usize) -> Result<(), BfExecErrorTy> {
+        self.ptr = self.ptr.checked_sub(v).ok_or(BfExecErrorTy::Underflow)?;
         Ok(())
     }
 
     #[inline]
-    fn write(&mut self, v: u8) -> Result<(), BfExecError> {
+    fn write(&mut self, v: u8) -> Result<(), BfExecErrorTy> {
         let _ = self.stdout.write(&[v])?;
 
         // based on 60 fps update (actual 62.5)
@@ -243,7 +265,10 @@ impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T,
     }
 
     #[inline]
-    fn read(&mut self) -> Result<u8, BfExecError> {
+    fn read(&mut self) -> Result<u8, BfExecErrorTy> {
+        // flush so the end user always gets prompts
+        self.stdout.flush()?;
+
         let mut v = [0];
         let _ = self.stdin.read(&mut v)?;
         Ok(v[0])
@@ -252,54 +277,83 @@ impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T,
     fn internal_run<const LIMIT_INSTRUCTIONS: bool>(
         &mut self,
         stream: &[BfInstruc<T>],
+        mut idx: usize,
     ) -> Result<(), BfExecError> {
         use BfInstruc::*;
 
-        let mut idx = 0usize;
         let len = stream.len();
 
         // SAFETY: check ptr bounds now to ensure they are valid before a _unchecked op is called without a ptr mutating op
         if self.ptr >= self.data.len() {
-            return Err(BfExecError::InitOverflow);
+            return Err(BfExecError {
+                source: BfExecErrorTy::InitOverflow,
+                idx,
+            });
         }
 
         if LIMIT_INSTRUCTIONS && self.instruction_limit == 0 {
-            return Err(BfExecError::NotEnoughInstructions);
+            return Err(BfExecError {
+                source: BfExecErrorTy::NotEnoughInstructions,
+                idx,
+            });
         }
 
         // SAFETY: `ptr` bounds are checked by `ptr` mutating operations, so it will remain valid within this function
         while idx < len {
             if LIMIT_INSTRUCTIONS && self.instruction_limit == 0 {
-                return Err(BfExecError::NotEnoughInstructions);
+                return Err(BfExecError {
+                    source: BfExecErrorTy::NotEnoughInstructions,
+                    idx,
+                });
             }
 
             unsafe {
-                match stream[idx] {
-                    Zero => self.map_current(|_| T::ZERO),
-                    Inc => self.map_current(|c| c.wrapping_add(T::from(1))),
-                    Dec => self.map_current(|c| c.wrapping_sub(T::from(1))),
-                    IncPtr => self.inc_ptr_by(1)?,
-                    DecPtr => self.dec_ptr_by(1)?,
-                    Write => self.write(self.cur_unchecked().truncate_u8())?,
+                // TODO: try block :plead:
+                (|| match stream[idx] {
+                    Zero => {
+                        self.map_current(|_| T::ZERO);
+                        Ok(())
+                    }
+                    Inc => {
+                        self.map_current(|c| c.wrapping_add(T::from(1)));
+                        Ok(())
+                    }
+                    Dec => {
+                        self.map_current(|c| c.wrapping_sub(T::from(1)));
+                        Ok(())
+                    }
+                    IncPtr => self.inc_ptr_by(1),
+                    DecPtr => self.dec_ptr_by(1),
+                    Write => self.write(self.cur_unchecked().truncate_u8()),
                     Read => {
                         let v = self.read()?.into();
                         self.map_current(|_| v);
+                        Ok(())
                     }
                     LStart(end) => {
                         if self.cur_unchecked() == T::ZERO {
                             idx = end as usize;
                         }
+                        Ok(())
                     }
                     LEnd(start) => {
                         if self.cur_unchecked() != T::ZERO {
                             idx = start as usize;
                         }
+                        Ok(())
                     }
-                    IncBy(val) => self.map_current(|c| c.wrapping_add(val)),
-                    DecBy(val) => self.map_current(|c| c.wrapping_sub(val)),
-                    IncPtrBy(val) => self.inc_ptr_by(val.get() as usize)?,
-                    DecPtrBy(val) => self.dec_ptr_by(val.get() as usize)?,
-                }
+                    IncBy(val) => {
+                        self.map_current(|c| c.wrapping_add(val));
+                        Ok(())
+                    }
+                    DecBy(val) => {
+                        self.map_current(|c| c.wrapping_sub(val));
+                        Ok(())
+                    }
+                    IncPtrBy(val) => self.inc_ptr_by(val.get() as usize),
+                    DecPtrBy(val) => self.dec_ptr_by(val.get() as usize),
+                })()
+                .map_err(|source| BfExecError { source, idx })?;
             }
 
             idx += 1;
@@ -317,7 +371,7 @@ impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T,
     /// # Errors
     /// This function will error if there is an error in the in/out streams or if the data pointer overflows/underflows.
     pub fn run(&mut self, stream: &[BfInstruc<T>]) -> Result<(), BfExecError> {
-        self.internal_run::<false>(stream)
+        self.internal_run::<false>(stream, 0)
     }
 
     /// Runs brainfuck with a limited instruction count specified by [`BrainFuckExecutor::instructions_left`], this function will eventually halt.
@@ -327,7 +381,24 @@ impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T,
     /// # Errors
     /// This function will error if there is an error in the in/out streams, if the data pointer overflows/underflows, or if the instruction limit is reached before execution ends.
     pub fn run_limited(&mut self, stream: &[BfInstruc<T>]) -> Result<(), BfExecError> {
-        self.internal_run::<true>(stream)
+        self.internal_run::<true>(stream, 0)
+    }
+
+    /// Runs brainfuck with a limited instruction count specified by [`BrainFuckExecutor::instructions_left`], this function will eventually halt.
+    ///
+    /// If the brainfuck finishes executing without reaching the limit, the leftover instructions will be kept in instructions left, while if it errors instructions left will be zero.
+    ///
+    /// This function accepts a start parameter that tells it to start from a specific index in the
+    /// stream, this allows for completely pausing and restarting execution of code
+    ///
+    /// # Errors
+    /// This function will error if there is an error in the in/out streams, if the data pointer overflows/underflows, or if the instruction limit is reached before execution ends.
+    pub fn run_limited_from(
+        &mut self,
+        stream: &[BfInstruc<T>],
+        start: usize,
+    ) -> Result<(), BfExecError> {
+        self.internal_run::<true>(stream, start)
     }
 
     /// provides a calculated at runtime estimate of instruction throughput for the given mode using 100k iterations,
@@ -371,12 +442,19 @@ impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T,
 
         let start = time::Instant::now();
 
-        if let Err(e) = exec.run_limited(stream) {
+        // black_box stream so its not const folded
+        if let Err(e) = exec.run_limited(black_box(stream)) {
             match e {
-                BfExecError::NotEnoughInstructions => {}
+                BfExecError {
+                    source: BfExecErrorTy::NotEnoughInstructions,
+                    ..
+                } => {}
                 v => return Err(v),
             }
         };
+
+        // black_box after running so that the exec environment must have been modified
+        let exec = black_box(exec);
 
         Ok(
             (u128::from(SAMPLE - u32::try_from(exec.instructions_left()).unwrap()) * 1_000_000_000)
@@ -389,7 +467,8 @@ impl<T: BfOptimizable + Default, I: io::Read, O: io::Write> BrainFuckExecutor<T,
 fn test_exec_env() {
     use super::compiler::BfInstructionStream;
 
-    let parse_bf = |code: &str| BfInstructionStream::optimized_from_text(code.bytes()).unwrap();
+    let parse_bf =
+        |code: &str| BfInstructionStream::optimized_from_text(code.bytes(), None).unwrap();
 
     let run_code = |x: &str| {
         let mut env = BrainFuckExecutor::new_stdio::<u8>(30_000);
@@ -423,7 +502,7 @@ fn test_exec_env() {
             match env.run_limited(&parse_bf($s)) {
                 Ok(_) => panic!("Got Ok(()) value, expected {:?}", $rep),
                 Err(err) => match err {
-                    $err => (),
+                    BfExecError { source: $err, .. } => (),
                     e => panic!("Got {:?} value, expected {:?}", e, $rep),
                 },
             };
@@ -431,12 +510,12 @@ fn test_exec_env() {
     }
 
     expect_output("++++[>++++[>++++<-]<-]>>+.", "A");
-    expect_error!("<", BfExecError::Underflow, BfExecError::Underflow);
-    expect_error!("+[>+]", BfExecError::Overflow, BfExecError::Overflow);
+    expect_error!("<", BfExecErrorTy::Underflow, BfExecErrorTy::Underflow);
+    expect_error!("+[>+]", BfExecErrorTy::Overflow, BfExecErrorTy::Overflow);
     expect_error!(
         "+[]",
-        BfExecError::NotEnoughInstructions,
-        BfExecError::NotEnoughInstructions
+        BfExecErrorTy::NotEnoughInstructions,
+        BfExecErrorTy::NotEnoughInstructions
     );
     run_code("-");
     run_code(">>");

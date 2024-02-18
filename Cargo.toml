@@ -18,5 +18,7 @@ strum = "0.24"
 strum_macros = "0.24"
 argh = "0.1"
 usize_cast = "1.1.0"
+either = "1.10.0"
+clap = { version = "4.5.1", features = ["derive"] }
 
 
