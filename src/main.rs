@@ -77,7 +77,7 @@ struct CompilerArgs {
     #[arg(short, long)]
     output: Option<String>,
 
-    /// optimize by prerunning in interpreter for up to N seconds, defaults to 0
+    /// consteval by prerunning in interpreter for up to N seconds, defaults to O1
     #[arg(short = 'O', long = "opt-level")]
     opt_level: Option<u32>,
 }
@@ -211,15 +211,12 @@ fn compile<CellSize: BfOptimizable>(
         None => Box::new(io::BufWriter::new(io::stdout())),
     };
 
-    match args.opt_level {
-        None => code.render_c(&mut fp)?,
-        Some(secs) => {
-            if secs != 0 {
-                render_c_deadline(&code, secs, &mut fp)?;
-            } else {
-                code.render_c(&mut fp)?;
-            }
-        }
+    let secs = args.opt_level.unwrap_or(1);
+
+    if secs != 0 {
+        render_c_deadline(&code, secs, &mut fp)?;
+    } else {
+        code.render_c(&mut fp)?;
     }
 
     fp.flush()?;
