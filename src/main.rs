@@ -168,6 +168,7 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                 | BfExecErrorTy::InitOverflow) => {
                     return Err(format!("consteval: {err}").into());
                 }
+                // we know this cant be the Write impl, as Vec::write wont error
                 BfExecErrorTy::IOError(_) => {
                     code.render_interpreted_c(
                         &BfExecState {
@@ -265,9 +266,12 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
             let mut cmd = TopLevel::command();
             let cname = cmd.get_name().to_owned();
 
-            // TODO(ultrabear): this panics on any write errors, thanks clap_complete... i dont have
-            // the time to fix this, and its just stdout, whatever.
-            generate(args.shell, &mut cmd, cname, &mut io::stdout());
+            let mut out = vec![];
+
+            // dont write directly to stdout because clap_complete panics on io errors
+            generate(args.shell, &mut cmd, cname, &mut out);
+
+            io::stdout().write_all(&out)?;
         }
         CompileSwitch::Compile(args) => match bits.unwrap_or(Mode::U8) {
             Mode::U8 => compile::<u8>(&code, size, args),
