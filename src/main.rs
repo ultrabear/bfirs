@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use clap_complete::{generate, Shell};
 use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 
 pub mod interpreter;
@@ -17,17 +18,15 @@ pub mod interpreter;
 use either::Either;
 use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor, BrainFuckExecutorBuilder};
 
-use clap::{Args, Parser};
+use clap::{Args, CommandFactory, Parser};
 
-use strum_macros::EnumString;
-
-#[derive(EnumString, Clone, Copy)]
+#[derive(clap::ValueEnum, Clone, Copy)]
 enum Mode {
-    #[strum(serialize = "8")]
+    #[value(name = "8")]
     U8,
-    #[strum(serialize = "16")]
+    #[value(name = "16")]
     U16,
-    #[strum(serialize = "32")]
+    #[value(name = "32")]
     U32,
 }
 
@@ -37,7 +36,7 @@ struct TopLevel {
     #[command(subcommand)]
     sub: CompileSwitch,
 
-    /// cellsize to use, defaults to 8, valid values: 8/16/32
+    /// cellsize to use, defaults to 8
     #[arg(short, long, global = true)]
     bits: Option<Mode>,
 
@@ -60,6 +59,15 @@ enum CompileSwitch {
     Interpret(InterpreterArgs),
     #[command(name = "compile", visible_alias = "c")]
     Compile(CompilerArgs),
+    #[command(name = "completions")]
+    Completions(CompletionsArgs),
+}
+
+#[derive(Args)]
+/// generate completions for a supported shell
+struct CompletionsArgs {
+    /// the shell to generate completions for
+    shell: Shell,
 }
 
 #[derive(Args, Copy, Clone)]
@@ -253,6 +261,14 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     match sub {
+        CompileSwitch::Completions(args) => {
+            let mut cmd = TopLevel::command();
+            let cname = cmd.get_name().to_owned();
+
+            // TODO(ultrabear): this panics on any write errors, thanks clap_complete... i dont have
+            // the time to fix this, and its just stdout, whatever.
+            generate(args.shell, &mut cmd, cname, &mut io::stdout());
+        }
         CompileSwitch::Compile(args) => match bits.unwrap_or(Mode::U8) {
             Mode::U8 => compile::<u8>(&code, size, args),
             Mode::U16 => compile::<u16>(&code, size, args),
