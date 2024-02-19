@@ -281,8 +281,6 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     ) -> Result<(), BfExecError> {
         use BfInstruc::*;
 
-        let len = stream.len();
-
         // SAFETY: check ptr bounds now to ensure they are valid before a _unchecked op is called without a ptr mutating op
         if self.ptr >= self.data.len() {
             return Err(BfExecError {
@@ -299,7 +297,7 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
         }
 
         // SAFETY: `ptr` bounds are checked by `ptr` mutating operations, so it will remain valid within this function
-        while idx < len {
+        while idx < stream.len() {
             if LIMIT_INSTRUCTIONS && self.instruction_limit == 0 {
                 return Err(BfExecError {
                     source: BfExecErrorTy::NotEnoughInstructions,
