@@ -129,17 +129,15 @@ fn render_c_deadline<CellSize: BfOptimizable>(
     secs: u32,
     fp: &mut dyn io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut out = vec![];
-
     let mut execenv = BrainFuckExecutorBuilder::<CellSize, _, _>::new()
         .array_len(code.reccomended_array_size())
         .stream_in(ErrorReader)
-        .stream_out(&mut out)
+        .stream_out(vec![])
         .build()
         .unwrap();
 
     let est =
-        u64::try_from(BrainFuckExecutor::<CellSize, ErrorReader, &mut Vec<u8>>::estimate_instructions_per_second(
+        u64::try_from(BrainFuckExecutor::<CellSize, ErrorReader, Vec<u8>>::estimate_instructions_per_second(
         )).map_err(|_| "computer is too fast!! (u64::MAX overflowed when calculating instructions per second throughput)")? / 10;
 
     let start = std::time::Instant::now();
@@ -158,7 +156,7 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                         data: &execenv.data,
                         instruction_pointer: None,
                     },
-                    execenv.stdout,
+                    &execenv.stdout,
                     fp,
                 )?;
                 break;
@@ -177,7 +175,7 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                             data: &execenv.data,
                             instruction_pointer: Some(idx),
                         },
-                        execenv.stdout,
+                        &execenv.stdout,
                         fp,
                     )?;
                     break;
@@ -192,7 +190,7 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                                 data: &execenv.data,
                                 instruction_pointer: Some(idx),
                             },
-                            execenv.stdout,
+                            &execenv.stdout,
                             fp,
                         )?;
                         break;
