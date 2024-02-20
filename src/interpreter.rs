@@ -221,21 +221,18 @@ impl<T, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
 }
 
 impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
-    #[inline]
     unsafe fn cur_unchecked(&self) -> T {
         // SAFETY: The caller has asserted that the current pointer is a valid index
         debug_assert!(self.ptr < self.data.len());
         *self.data.get_unchecked(self.ptr)
     }
 
-    #[inline]
     unsafe fn map_current(&mut self, func: impl FnOnce(T) -> T) {
         // SAFETY: The caller has asserted that the current pointer is a valid index
         debug_assert!(self.ptr < self.data.len());
         *self.data.get_unchecked_mut(self.ptr) = func(self.cur_unchecked());
     }
 
-    #[inline]
     fn inc_ptr_by(&mut self, v: usize) -> Result<(), BfExecErrorTy> {
         self.ptr += v;
         if self.ptr >= self.data.len() {
@@ -245,13 +242,15 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
         Ok(())
     }
 
-    #[inline]
     fn dec_ptr_by(&mut self, v: usize) -> Result<(), BfExecErrorTy> {
         self.ptr = self.ptr.checked_sub(v).ok_or(BfExecErrorTy::Underflow)?;
         Ok(())
     }
 
-    #[inline]
+    // inlining this increases performance on mandelbrot, probably thanks to reg cramming
+    // im sorry clippy, the numbers are real this time
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
     fn write(&mut self, v: u8) -> Result<(), BfExecErrorTy> {
         let _ = self.stdout.write(&[v])?;
 
@@ -264,7 +263,6 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
         Ok(())
     }
 
-    #[inline]
     fn read(&mut self) -> Result<u8, BfExecErrorTy> {
         // flush so the end user always gets prompts
         self.stdout.flush()?;
@@ -274,6 +272,9 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
         Ok(v[0])
     }
 
+    // this inline(always) measurably increases performance (8.9s to 7.2s on mandelbrot) most probably
+    // because if its not inlined it cant get enough context to optimize for what its being called
+    // with (like the runtime const arguments that run and run_limited pass)
     #[inline(always)]
     fn internal_run<const LIMIT_INSTRUCTIONS: bool>(
         &mut self,
