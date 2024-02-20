@@ -274,6 +274,7 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
         Ok(v[0])
     }
 
+    #[inline(always)]
     fn internal_run<const LIMIT_INSTRUCTIONS: bool>(
         &mut self,
         stream: &[BfInstruc<T>],
