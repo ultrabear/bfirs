@@ -288,14 +288,13 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn main() {
-    match inner_main() {
-        Ok(()) => (),
-        Err(e) => {
-            // ignore all errors here, if we cant write to stdout/stderr its cooked anyways
-            _ = io::stdout().flush();
-            _ = writeln!(io::stderr(), "\x1b[91mERROR:\x1b[0m {e}");
-            _ = io::stderr().flush();
-        }
-    }
+fn main() -> Result<(), u32> {
+    inner_main().map_err(|e| {
+        // ignore all errors here, if we cant write to stdout/stderr its cooked anyways
+        _ = io::stdout().flush();
+        _ = writeln!(io::stderr(), "\x1b[91mERROR:\x1b[0m {e}");
+        _ = io::stderr().flush();
+
+        1
+    })
 }
