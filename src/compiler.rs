@@ -234,7 +234,6 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
         write!(out, "fwrite(\"")?;
 
         for &c in write {
-            // this is awful it writes octal literals indiscriminately, but it does work every time
             write!(out, "{}", byte_to_hex_literal(c, &mut [0; 4]))?;
         }
 
