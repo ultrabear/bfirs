@@ -206,25 +206,40 @@ fn byte_to_cstr_literal(b: u8, buf: &mut [u8; 4]) -> &str {
 }
 
 impl<T: BfOptimizable> BfInstructionStream<T> {
-    fn write_c_header(&self, out: &mut dyn io::Write) -> io::Result<()> {
-        let opening_brace = '{';
-        let array_init = "{0,}";
+    fn write_c_header(
+        &self,
+        out: &mut dyn io::Write,
+        use_write: bool,
+        use_read: bool,
+        use_stack: bool,
+    ) -> io::Result<()> {
+        writeln!(out, "#include <stdio.h>")?;
 
-        writeln!(out, "#include <stdio.h>\n#define ARRSIZE {}", self.1)?;
+        if use_stack {
+            writeln!(out, "#define ARRSIZE {}", self.1)?;
+        }
 
-        writeln!(out, "void w(char v) {{ fputc(v, stdout); }}")?;
-        writeln!(
-            out,
-            "void r({}* a) {{ fflush(stdout); *a = fgetc(stdin); if (feof(stdin)) *a = 0; }}",
-            T::C_INT_NAME
-        )?;
+        if use_write {
+            writeln!(out, "void w(char v) {{ fputc(v, stdout); }}")?;
+        }
+        if use_read {
+            writeln!(
+                out,
+                "void r({}* a) {{ fflush(stdout); *a = fgetc(stdin); if (feof(stdin)) *a = 0; }}",
+                T::C_INT_NAME
+            )?;
+        }
 
-        writeln!(
-            out,
-            "int main() {opening_brace}\n{} arr[ARRSIZE] = {array_init};\n{}* restrict a = arr;",
-            T::C_INT_NAME,
-            T::C_INT_NAME
-        )?;
+        writeln!(out, "int main() {{")?;
+
+        if use_stack {
+            writeln!(
+                out,
+                "{} arr[ARRSIZE] = {{0,}};\n{}* restrict a = arr;",
+                T::C_INT_NAME,
+                T::C_INT_NAME
+            )?;
+        }
 
         Ok(())
     }
@@ -234,7 +249,13 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
     /// # Errors
     /// This function returns any errors raised by the `out` parameter
     pub fn render_c(&self, mut out: impl io::Write) -> io::Result<()> {
-        self.write_c_header(&mut out)?;
+        let (use_w, use_r) = self.0.iter().fold((false, false), |(w, r), val| match val {
+            BfInstruc::Read => (w, true),
+            BfInstruc::Write => (true, r),
+            _ => (w, r),
+        });
+
+        self.write_c_header(&mut out, use_w, use_r, !self.0.is_empty())?;
 
         for i in &self.0 {
             i.write_c_for(&mut out)?;
@@ -269,13 +290,19 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
         written: &[u8],
         mut out: impl io::Write,
     ) -> io::Result<()> {
-        self.write_c_header(&mut out)?;
-
-        if !written.is_empty() {
-            Self::write_bytestring_c(written, &mut out)?;
-        }
-
         if let Some(left_off) = state.instruction_pointer {
+            let (use_w, use_r) = self.0.iter().fold((false, false), |(w, r), val| match val {
+                BfInstruc::Read => (w, true),
+                BfInstruc::Write => (true, r),
+                _ => (w, r),
+            });
+
+            self.write_c_header(&mut out, use_w, use_r, true)?;
+
+            if !written.is_empty() {
+                Self::write_bytestring_c(written, &mut out)?;
+            }
+
             for (idx, &b) in state.data.iter().enumerate() {
                 if b != T::ZERO {
                     writeln!(out, "a[{idx}] = {b};")?;
@@ -298,6 +325,12 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
                 instruc.write_c_for(&mut out)?;
 
                 writeln!(out)?;
+            }
+        } else {
+            self.write_c_header(&mut out, false, false, false)?;
+
+            if !written.is_empty() {
+                Self::write_bytestring_c(written, &mut out)?;
             }
         }
 
