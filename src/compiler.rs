@@ -178,14 +178,29 @@ pub struct BfExecState<'a, T: BfOptimizable> {
     pub instruction_pointer: Option<usize>,
 }
 
-fn byte_to_hex_literal(b: u8, buf: &mut [u8; 4]) -> &str {
-    const LOOKUP: &[u8] = b"0123456789ABCDEF";
+fn byte_to_cstr_literal(b: u8, buf: &mut [u8; 4]) -> &str {
+    const LOOKUP: &[u8] = b"01234567";
+
+    if b.is_ascii_alphanumeric()
+        || b == b' '
+        || (b.is_ascii_punctuation() && !(b == b'"' || b == b'\\'))
+    {
+        buf[0] = b;
+
+        return core::str::from_utf8(&buf[..1]).unwrap();
+    }
+
+    if b == b'\n' {
+        buf[0] = b'\\';
+        buf[1] = b'n';
+
+        return core::str::from_utf8(&buf[..2]).unwrap();
+    }
 
     buf[0] = b'\\';
-    buf[1] = b'x';
-
-    buf[2] = LOOKUP[(b >> 4) as usize];
-    buf[3] = LOOKUP[(b & 0xf) as usize];
+    buf[1] = LOOKUP[((b >> 6) & 0o7) as usize];
+    buf[2] = LOOKUP[((b >> 3) & 0o7) as usize];
+    buf[3] = LOOKUP[(b & 0o7) as usize];
 
     core::str::from_utf8(buf).unwrap()
 }
@@ -234,7 +249,7 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
         write!(out, "fwrite(\"")?;
 
         for &c in write {
-            write!(out, "{}", byte_to_hex_literal(c, &mut [0; 4]))?;
+            write!(out, "{}", byte_to_cstr_literal(c, &mut [0; 4]))?;
         }
 
         writeln!(out, "\", 1, {}, stdout);", write.len())?;
