@@ -224,7 +224,7 @@ fn compile<CellSize: BfOptimizable>(
     if secs != 0 {
         render_c_deadline(&code, secs, &mut fp)?;
     } else {
-        code.render_c(&mut fp)?;
+        code.render_c(&mut *fp)?;
     }
 
     fp.flush()?;

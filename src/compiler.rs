@@ -248,14 +248,14 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
     ///
     /// # Errors
     /// This function returns any errors raised by the `out` parameter
-    pub fn render_c(&self, mut out: impl io::Write) -> io::Result<()> {
+    pub fn render_c(&self, mut out: &mut dyn io::Write) -> io::Result<()> {
         let (use_w, use_r) = self.0.iter().fold((false, false), |(w, r), val| match val {
             BfInstruc::Read => (w, true),
             BfInstruc::Write => (true, r),
             _ => (w, r),
         });
 
-        self.write_c_header(&mut out, use_w, use_r, !self.0.is_empty())?;
+        self.write_c_header(out, use_w, use_r, !self.0.is_empty())?;
 
         for i in &self.0 {
             i.write_c_for(&mut out)?;
@@ -288,7 +288,7 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
         &self,
         state: &BfExecState<T>,
         written: &[u8],
-        mut out: impl io::Write,
+        out: &mut dyn io::Write,
     ) -> io::Result<()> {
         if let Some(left_off) = state.instruction_pointer {
             let (use_w, use_r) = self.0.iter().fold((false, false), |(w, r), val| match val {
@@ -297,10 +297,10 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
                 _ => (w, r),
             });
 
-            self.write_c_header(&mut out, use_w, use_r, true)?;
+            self.write_c_header(out, use_w, use_r, true)?;
 
             if !written.is_empty() {
-                Self::write_bytestring_c(written, &mut out)?;
+                Self::write_bytestring_c(written, out)?;
             }
 
             for (idx, &b) in state.data.iter().enumerate() {
@@ -322,15 +322,15 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
                     writeln!(out, "startpos_jump:")?;
                 }
 
-                instruc.write_c_for(&mut out)?;
+                instruc.write_c_for(out)?;
 
                 writeln!(out)?;
             }
         } else {
-            self.write_c_header(&mut out, false, false, false)?;
+            self.write_c_header(out, false, false, false)?;
 
             if !written.is_empty() {
-                Self::write_bytestring_c(written, &mut out)?;
+                Self::write_bytestring_c(written, out)?;
             }
         }
 
