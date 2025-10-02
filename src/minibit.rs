@@ -92,6 +92,7 @@ impl BTapeStream {
 
         macro_rules! push {
             ($byte:expr) => {{
+                assert!(push_idx <= pull_idx);
                 data[push_idx] = $byte;
                 push_idx += 1;
             }};
@@ -102,7 +103,7 @@ impl BTapeStream {
                 b',' => push!(Instr::ReadWrite.with(0)),
                 b'.' => push!(Instr::ReadWrite.with(1)),
                 b'[' => {
-                    if data.get(pull_idx + 1..pull_idx + 3) == Some(&[b'+' | b'-', b']']) {
+                    if let Some(&[b'+' | b'-', b']']) = data.get(pull_idx + 1..pull_idx + 3) {
                         push!(Instr::Zero.with(0));
                         pull_idx += 2;
                     } else {
@@ -282,8 +283,7 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BfTapeExecutor<T, I, O> {
                 (Instr::Dec, by) => unsafe {
                     self.set(
                         self.get()
-                            .wrapping_sub(T::from(by))
-                            .wrapping_add(T::from(1)),
+                            .wrapping_sub(T::from(by).wrapping_add(T::from(1))),
                     )
                 },
                 (Instr::IncPtr, by) => {
@@ -327,6 +327,7 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BfTapeExecutor<T, I, O> {
                     }
                 }
             }
+
             idx += 1;
         }
 
