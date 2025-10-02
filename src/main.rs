@@ -15,11 +15,14 @@ use clap_complete::{generate, Shell};
 use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 
 pub mod interpreter;
+mod minibit;
 
 use either::Either;
 use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor, BrainFuckExecutorBuilder};
 
 use clap::{Args, CommandFactory, Parser};
+
+use crate::minibit::{BTapeStream, BfTapeExecutor};
 
 #[derive(clap::ValueEnum, Clone, Copy)]
 enum Mode {
@@ -31,15 +34,21 @@ enum Mode {
     U32,
 }
 
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum InterpreterType {
+    Standard,
+    Minibit,
+}
+
 #[derive(Parser)]
 /// a performance oriented brainfuck interpreter and compiler
 struct TopLevel {
     #[command(subcommand)]
     sub: CompileSwitch,
 
-    /// cellsize to use, defaults to 8
-    #[arg(short, long, global = true)]
-    bits: Option<Mode>,
+    /// cellsize to use
+    #[arg(short, long, global = true, default_value = "8")]
+    bits: Mode,
 
     /// number of cells to use, defaults to at least 30k
     #[arg(short, long, global = true)]
@@ -77,6 +86,12 @@ struct InterpreterArgs {
     /// run a limited amount of instructions
     #[arg(short, long)]
     limit: Option<u64>,
+
+    /// Interpreter choice, the standard interpreter allocates approximately 10 bytes per byte,
+    /// while the minibit interpreter allocates 1 byte per byte at most, but runs slower
+    /// minibit also does not implement instruction limited mode
+    #[arg(short, long, default_value = "standard")]
+    interpreter: InterpreterType,
 }
 
 #[derive(Args)]
@@ -91,11 +106,40 @@ struct CompilerArgs {
     opt_level: Option<u32>,
 }
 
+/// Interprets in MiniBit runtime, a low memory overhead bf executor
+fn minibit_interpret<C: BfOptimizable>(
+    code: Vec<u8>,
+    arr_len: Option<u32>,
+) -> Result<(), Either<BfExecError, BfCompError>> {
+    let arr_len = arr_len.map_or_else(
+        || std::cmp::max(code.iter().filter(|b| **b == b'>').count() as usize, 30_000),
+        |v| v as usize,
+    );
+
+    let stream = BTapeStream::from_bf(code).map_err(Either::Right)?;
+
+    let mut engine = BfTapeExecutor {
+        stdout: std::io::stdout().lock(),
+        stdin: std::io::stdin().lock(),
+        data: vec![C::ZERO; arr_len].into_boxed_slice(),
+        ptr: 0,
+        last_flush: Instant::now(),
+    };
+
+    engine.run_stream(&stream).map_err(Either::Left)?;
+
+    Ok(())
+}
+
 fn interpret<CellSize: BfOptimizable>(
-    code: &[u8],
+    code: Vec<u8>,
     arr_len: Option<u32>,
     args: InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
+    if matches!(args.interpreter, InterpreterType::Minibit) {
+        return minibit_interpret::<CellSize>(code, arr_len);
+    }
+
     let code = BfInstructionStream::optimized_from_text(code.iter().copied(), arr_len)
         .map_err(Either::Right)?;
 
@@ -272,15 +316,15 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
 
             io::stdout().write_all(&out)?;
         }
-        CompileSwitch::Compile(args) => match bits.unwrap_or(Mode::U8) {
+        CompileSwitch::Compile(args) => match bits {
             Mode::U8 => compile::<u8>(&code, size, args),
             Mode::U16 => compile::<u16>(&code, size, args),
             Mode::U32 => compile::<u32>(&code, size, args),
         }?,
-        CompileSwitch::Interpret(args) => match bits.unwrap_or(Mode::U8) {
-            Mode::U8 => interpret::<u8>(&code, size, args),
-            Mode::U16 => interpret::<u16>(&code, size, args),
-            Mode::U32 => interpret::<u32>(&code, size, args),
+        CompileSwitch::Interpret(args) => match bits {
+            Mode::U8 => interpret::<u8>(code, size, args),
+            Mode::U16 => interpret::<u16>(code, size, args),
+            Mode::U32 => interpret::<u32>(code, size, args),
         }?,
     }
 
