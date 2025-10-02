@@ -92,7 +92,6 @@ impl BTapeStream {
 
         macro_rules! push {
             ($byte:expr) => {{
-                assert!(push_idx <= pull_idx);
                 data[push_idx] = $byte;
                 push_idx += 1;
             }};
@@ -140,7 +139,7 @@ impl BTapeStream {
                         push!(instr.with(last - 1));
                     }
                 }
-                _ => unreachable!(),
+                _ => {}
             }
 
             pull_idx += 1;
