@@ -86,9 +86,10 @@ impl BTapeStream {
         data.retain(|v| matches!(v, b'+' | b'-' | b'>' | b'<' | b'[' | b']' | b',' | b'.'));
     }
 
-    fn rewrite(data: &mut Vec<u8>) {
+    fn rewrite(data: &mut Vec<u8>) -> u64 {
         let mut push_idx = 0usize;
         let mut pull_idx = 0usize;
+        let mut incptr_count = 0;
 
         macro_rules! push {
             ($byte:expr) => {{
@@ -123,7 +124,10 @@ impl BTapeStream {
                     let instr = match initial {
                         b'+' => Instr::Inc,
                         b'-' => Instr::Dec,
-                        b'>' => Instr::IncPtr,
+                        b'>' => {
+                            incptr_count += count;
+                            Instr::IncPtr
+                        }
                         b'<' => Instr::DecPtr,
                         _ => unreachable!(),
                     };
@@ -147,6 +151,8 @@ impl BTapeStream {
 
         data.truncate(push_idx);
         data.shrink_to_fit();
+
+        incptr_count
     }
 
     fn insert_loop(data: &mut Vec<BTape>) -> Result<HashMap<usize, usize>, BfCompError> {
@@ -192,14 +198,14 @@ impl BTapeStream {
         Ok(oversized)
     }
 
-    pub fn from_bf(mut data: Vec<u8>) -> Result<Self, BfCompError> {
+    pub fn from_bf(mut data: Vec<u8>) -> Result<(Self, u64), BfCompError> {
         Self::retain_bf(&mut data);
 
-        Self::rewrite(&mut data);
+        let count = Self::rewrite(&mut data);
 
         let map = Self::insert_loop(&mut data)?;
 
-        Ok(Self(data, map))
+        Ok((Self(data, map), count))
     }
 }
 

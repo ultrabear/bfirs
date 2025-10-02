@@ -111,12 +111,9 @@ fn minibit_interpret<C: BfOptimizable>(
     code: Vec<u8>,
     arr_len: Option<u32>,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
-    let arr_len = arr_len.map_or_else(
-        || std::cmp::max(code.iter().filter(|b| **b == b'>').count() as usize, 30_000),
-        |v| v as usize,
-    );
+    let (stream, arr_comp) = BTapeStream::from_bf(code).map_err(Either::Right)?;
 
-    let stream = BTapeStream::from_bf(code).map_err(Either::Right)?;
+    let arr_len = arr_len.map_or_else(|| std::cmp::max(arr_comp as usize, 30_000), |v| v as usize);
 
     let mut engine = BfTapeExecutor {
         stdout: std::io::stdout().lock(),
