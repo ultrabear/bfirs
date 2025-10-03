@@ -304,25 +304,19 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
         size,
     } = parse;
 
-    let storage: Option<_>;
-    let storage2: Option<_>;
+    let storage;
+    let storage2;
 
     let code: &[u8] = match code {
         Some(code) => &Vec::from(code),
         None => match file {
             Some(f) => {
-                let fp = std::fs::File::open(&f).map_err(|e| PathIoError(f.clone(), e))?;
-
-                storage = Some(fp);
-
-                let inserted = storage.as_ref().unwrap();
+                storage = std::fs::File::open(&f).map_err(|e| PathIoError(f.clone(), e))?;
 
                 // SAFETY: Please dont edit bf files while they are being compiled...
-                let map = unsafe { memmap2::Mmap::map(&*inserted).map_err(|e| PathIoError(f, e))? };
+                storage2 = unsafe { memmap2::Mmap::map(&storage).map_err(|e| PathIoError(f, e))? };
 
-                storage2 = Some(map);
-
-                storage2.as_ref().unwrap().as_ref()
+                storage2.as_ref()
             }
             None => &[],
         },
