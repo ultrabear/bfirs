@@ -108,12 +108,23 @@ struct CompilerArgs {
 
 /// Interprets in MiniBit runtime, a low memory overhead bf executor
 fn minibit_interpret<C: BfOptimizable>(
-    code: Vec<u8>,
+    code: &[u8],
     arr_len: Option<u32>,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
-    let (stream, arr_comp) = BTapeStream::from_bf(code).map_err(Either::Right)?;
+    let (arr_len, stream) = std::thread::scope(|s| {
+        let arr_len = s.spawn(move || {
+            arr_len.map_or_else(
+                || std::cmp::max(bytecount::count(&code, b'>') as usize, 30_000),
+                |v| v as usize,
+            )
+        });
 
-    let arr_len = arr_len.map_or_else(|| std::cmp::max(arr_comp as usize, 30_000), |v| v as usize);
+        let stream = s.spawn(|| BTapeStream::from_bf(code));
+
+        // these unwraps are fine as we dont expect either task to panic
+        Ok((arr_len.join().unwrap(), stream.join().unwrap()?))
+    })
+    .map_err(Either::Right)?;
 
     let mut engine = BfTapeExecutor {
         stdout: std::io::stdout().lock(),
@@ -129,7 +140,7 @@ fn minibit_interpret<C: BfOptimizable>(
 }
 
 fn interpret<CellSize: BfOptimizable>(
-    code: Vec<u8>,
+    code: &[u8],
     arr_len: Option<u32>,
     args: InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
@@ -293,11 +304,27 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
         size,
     } = parse;
 
-    let code = match code {
-        Some(code) => Vec::from(code),
+    let storage: Option<_>;
+    let storage2: Option<_>;
+
+    let code: &[u8] = match code {
+        Some(code) => &Vec::from(code),
         None => match file {
-            Some(f) => std::fs::read(&f).map_err(|e| PathIoError(f, e))?,
-            None => vec![],
+            Some(f) => {
+                let fp = std::fs::File::open(&f).map_err(|e| PathIoError(f.clone(), e))?;
+
+                storage = Some(fp);
+
+                let inserted = storage.as_ref().unwrap();
+
+                // SAFETY: Please dont edit bf files while they are being compiled...
+                let map = unsafe { memmap2::Mmap::map(&*inserted).map_err(|e| PathIoError(f, e))? };
+
+                storage2 = Some(map);
+
+                storage2.as_ref().unwrap().as_ref()
+            }
+            None => &[],
         },
     };
 
@@ -314,9 +341,9 @@ fn inner_main() -> Result<(), Box<dyn std::error::Error>> {
             io::stdout().write_all(&out)?;
         }
         CompileSwitch::Compile(args) => match bits {
-            Mode::U8 => compile::<u8>(&code, size, args),
-            Mode::U16 => compile::<u16>(&code, size, args),
-            Mode::U32 => compile::<u32>(&code, size, args),
+            Mode::U8 => compile::<u8>(code, size, args),
+            Mode::U16 => compile::<u16>(code, size, args),
+            Mode::U32 => compile::<u32>(code, size, args),
         }?,
         CompileSwitch::Interpret(args) => match bits {
             Mode::U8 => interpret::<u8>(code, size, args),

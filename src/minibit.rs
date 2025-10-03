@@ -82,30 +82,29 @@ impl fmt::Debug for BTapeStream {
 }
 
 impl BTapeStream {
-    fn retain_bf(data: &mut Vec<u8>) {
-        data.retain(|v| matches!(v, b'+' | b'-' | b'>' | b'<' | b'[' | b']' | b',' | b'.'));
-    }
+    fn rewrite(data: &[u8]) -> Vec<u8> {
+        let mut out = vec![];
 
-    fn rewrite(data: &mut Vec<u8>) -> u64 {
-        let mut push_idx = 0usize;
-        let mut pull_idx = 0usize;
-        let mut incptr_count = 0;
+        let mut pull = data
+            .iter()
+            .filter(|v| matches!(v, b'+' | b'-' | b'>' | b'<' | b'[' | b']' | b',' | b'.'));
 
         macro_rules! push {
             ($byte:expr) => {{
-                data[push_idx] = $byte;
-                push_idx += 1;
+                out.push($byte)
             }};
         }
 
-        while pull_idx < data.len() {
-            match data[pull_idx] {
+        while let Some(next) = pull.next() {
+            match next {
                 b',' => push!(Instr::ReadWrite.with(0)),
                 b'.' => push!(Instr::ReadWrite.with(1)),
                 b'[' => {
-                    if let Some(&[b'+' | b'-', b']']) = data.get(pull_idx + 1..pull_idx + 3) {
+                    let mut peek = pull.clone();
+
+                    if let (Some(b'+' | b'-'), Some(b']')) = (peek.next(), peek.next()) {
                         push!(Instr::Zero.with(0));
-                        pull_idx += 2;
+                        pull = peek;
                     } else {
                         push!(Instr::LStart.with(0));
                     }
@@ -116,18 +115,17 @@ impl BTapeStream {
                 initial @ (b'+' | b'-' | b'>' | b'<') => {
                     let mut count = 1u64;
 
-                    while Some(&initial) == data.get(pull_idx + 1) {
+                    let mut peek = pull.clone();
+
+                    while Some(initial) == peek.next() {
                         count += 1;
-                        pull_idx += 1;
+                        pull = peek.clone();
                     }
 
                     let instr = match initial {
                         b'+' => Instr::Inc,
                         b'-' => Instr::Dec,
-                        b'>' => {
-                            incptr_count += count;
-                            Instr::IncPtr
-                        }
+                        b'>' => Instr::IncPtr,
                         b'<' => Instr::DecPtr,
                         _ => unreachable!(),
                     };
@@ -145,17 +143,12 @@ impl BTapeStream {
                 }
                 _ => {}
             }
-
-            pull_idx += 1;
         }
 
-        data.truncate(push_idx);
-        data.shrink_to_fit();
-
-        incptr_count
+        out
     }
 
-    fn insert_loop(data: &mut Vec<BTape>) -> Result<HashMap<usize, usize>, BfCompError> {
+    fn insert_loop(data: &mut [BTape]) -> Result<HashMap<usize, usize>, BfCompError> {
         let mut stack = Vec::<usize>::new();
         let mut oversized = HashMap::new();
 
@@ -198,14 +191,12 @@ impl BTapeStream {
         Ok(oversized)
     }
 
-    pub fn from_bf(mut data: Vec<u8>) -> Result<(Self, u64), BfCompError> {
-        Self::retain_bf(&mut data);
-
-        let count = Self::rewrite(&mut data);
+    pub fn from_bf(data: &[u8]) -> Result<Self, BfCompError> {
+        let mut data = Self::rewrite(data);
 
         let map = Self::insert_loop(&mut data)?;
 
-        Ok((Self(data, map), count))
+        Ok(Self(data, map))
     }
 }
 
