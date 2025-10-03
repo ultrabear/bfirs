@@ -52,7 +52,7 @@ struct TopLevel {
 
     /// number of cells to use, defaults to at least 30k
     #[arg(short, long, global = true)]
-    size: Option<u32>,
+    size: Option<usize>,
 
     /// run the following argument as the input code
     #[arg(short, long, global = true)]
@@ -109,14 +109,11 @@ struct CompilerArgs {
 /// Interprets in MiniBit runtime, a low memory overhead bf executor
 fn minibit_interpret<C: BfOptimizable>(
     code: &[u8],
-    arr_len: Option<u32>,
+    arr_len: Option<usize>,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     let (arr_len, stream) = std::thread::scope(|s| {
         let arr_len = s.spawn(move || {
-            arr_len.map_or_else(
-                || std::cmp::max(bytecount::count(&code, b'>') as usize, 30_000),
-                |v| v as usize,
-            )
+            arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(&code, b'>'), 30_000))
         });
 
         let stream = s.spawn(|| BTapeStream::from_bf(code));
@@ -141,7 +138,7 @@ fn minibit_interpret<C: BfOptimizable>(
 
 fn interpret<CellSize: BfOptimizable>(
     code: &[u8],
-    arr_len: Option<u32>,
+    arr_len: Option<usize>,
     args: InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     if matches!(args.interpreter, InterpreterType::Minibit) {
@@ -259,7 +256,7 @@ fn render_c_deadline<CellSize: BfOptimizable>(
 
 fn compile<CellSize: BfOptimizable>(
     code: &[u8],
-    arr_len: Option<u32>,
+    arr_len: Option<usize>,
     args: CompilerArgs,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let code = BfInstructionStream::<CellSize>::optimized_from_text(code.iter().copied(), arr_len)?;

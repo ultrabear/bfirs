@@ -2,7 +2,6 @@ use core::fmt;
 use std::io;
 use std::num::NonZeroU32;
 use thiserror::Error;
-use usize_cast::IntoUsize;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
@@ -349,11 +348,11 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
     /// This function will error if while compiling the loop instructions are malformed by having a mismatched count or by having a loop end instruction without a start instruction
     pub fn optimized_from_text(
         v: impl Iterator<Item = u8>,
-        array_len: Option<u32>,
+        array_len: Option<usize>,
     ) -> Result<Self, BfCompError> {
         let mut new = Self(Self::bf_to_stream(v), 0);
 
-        let array_len: u32 = array_len.unwrap_or_else(|| {
+        let array_len: usize = array_len.unwrap_or_else(|| {
             new.iter()
                 .fold(0, |accu, x| {
                     if let BfInstruc::IncPtr = x {
@@ -365,7 +364,7 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
                 .max(30_000)
         });
 
-        new.1 = array_len.into_usize();
+        new.1 = array_len;
 
         if new.len() > (isize::MAX as usize) {
             return Err(BfCompError::Overflow);
