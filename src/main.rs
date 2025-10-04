@@ -5,6 +5,7 @@ pub mod compiler;
 
 use core::fmt;
 use std::{
+    fmt::Debug,
     fs::File,
     io::{self, Write},
     process::ExitCode,
@@ -87,6 +88,12 @@ struct InterpreterArgs {
     #[arg(short, long)]
     limit: Option<u64>,
 
+    /// Print interpreter tape to stdout
+    /// instead of executing,
+    /// useful for debugging
+    #[arg(short, long)]
+    print: bool,
+
     /// Interpreter choice, the standard interpreter allocates approximately 10 bytes per byte,
     /// while the minibit interpreter allocates 1 byte per byte at most, but runs slower
     /// minibit also does not implement instruction limited mode
@@ -110,10 +117,11 @@ struct CompilerArgs {
 fn minibit_interpret<C: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
+    print: bool,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     let (arr_len, stream) = std::thread::scope(|s| {
         let arr_len = s.spawn(move || {
-            arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(&code, b'>'), 30_000))
+            arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(code, b'>'), 30_000))
         });
 
         let stream = s.spawn(|| BTapeStream::from_bf(code));
@@ -122,6 +130,11 @@ fn minibit_interpret<C: BfOptimizable>(
         Ok((arr_len.join().unwrap(), stream.join().unwrap()?))
     })
     .map_err(Either::Right)?;
+
+    if print {
+        println!("{stream:?}");
+        return Ok(());
+    }
 
     let mut engine = BfTapeExecutor {
         stdout: std::io::stdout().lock(),
@@ -136,17 +149,22 @@ fn minibit_interpret<C: BfOptimizable>(
     Ok(())
 }
 
-fn interpret<CellSize: BfOptimizable>(
+fn interpret<CellSize: BfOptimizable + Debug>(
     code: &[u8],
     arr_len: Option<usize>,
     args: InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     if matches!(args.interpreter, InterpreterType::Minibit) {
-        return minibit_interpret::<CellSize>(code, arr_len);
+        return minibit_interpret::<CellSize>(code, arr_len, args.print);
     }
 
     let code = BfInstructionStream::optimized_from_text(code.iter().copied(), arr_len)
         .map_err(Either::Right)?;
+
+    if args.print {
+        println!("{code:?}");
+        return Ok(());
+    }
 
     let mut execenv =
         BrainFuckExecutor::new_stdio_locked::<CellSize>(code.reccomended_array_size());
@@ -248,7 +266,7 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                     execenv.add_instruction_limit(est)?;
                 }
             },
-        };
+        }
     }
 
     Ok(())

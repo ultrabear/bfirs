@@ -339,6 +339,7 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
     }
 }
 
+#[derive(Debug)]
 pub struct BfInstructionStream<T>(Vec<BfInstruc<T>>, usize);
 
 impl<T: BfOptimizable> BfInstructionStream<T> {
