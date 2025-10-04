@@ -192,7 +192,7 @@ impl BTapeStream {
                     let chunks = count / 32;
                     let last = (count % 32) as u8;
 
-                    if chunks >= 1 && matches!(instr, Instr::IncPtr | Instr::DecPtr) {
+                    if chunks >= 4 && matches!(instr, Instr::IncPtr | Instr::DecPtr) {
                         if let Instr::IncPtr = instr {
                             push!(Instr::wild(WildArgs::IncPtrMany));
                             out.extend_from_slice(&count.to_le_bytes());
