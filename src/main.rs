@@ -17,6 +17,7 @@ use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 
 pub mod interpreter;
 mod minibit;
+mod stupid;
 
 use either::Either;
 use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor, BrainFuckExecutorBuilder};
@@ -39,6 +40,7 @@ enum Mode {
 enum InterpreterType {
     Standard,
     Minibit,
+    Stupid,
 }
 
 #[derive(Parser)]
@@ -149,13 +151,39 @@ fn minibit_interpret<C: BfOptimizable>(
     Ok(())
 }
 
+fn stupid_interpret<C: BfOptimizable>(
+    code: &[u8],
+    arr_len: Option<usize>,
+    print: bool,
+) -> Result<(), Either<BfExecError, BfCompError>> {
+    if print {
+        std::io::stdout().write_all(code).expect("Written");
+        return Ok(());
+    }
+
+    let arr_len = arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(code, b'>'), 30_000));
+
+    let mut state = stupid::BfState {
+        ptr: 0,
+        data: vec![C::ZERO; arr_len].into_boxed_slice(),
+        read: std::io::stdin().lock(),
+        write: std::io::stdout().lock(),
+    };
+
+    state.run(code)
+}
+
 fn interpret<CellSize: BfOptimizable + Debug>(
     code: &[u8],
     arr_len: Option<usize>,
     args: InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
-    if matches!(args.interpreter, InterpreterType::Minibit) {
-        return minibit_interpret::<CellSize>(code, arr_len, args.print);
+    match args.interpreter {
+        InterpreterType::Standard => {}
+        InterpreterType::Minibit => {
+            return minibit_interpret::<CellSize>(code, arr_len, args.print);
+        }
+        InterpreterType::Stupid => return stupid_interpret::<CellSize>(code, arr_len, args.print),
     }
 
     let code = BfInstructionStream::optimized_from_text(code.iter().copied(), arr_len)
