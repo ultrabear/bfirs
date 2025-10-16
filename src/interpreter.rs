@@ -1,8 +1,11 @@
 use core::fmt;
-use std::{hint::black_box, io};
+use std::{hint::black_box, io, time::Duration};
 use thiserror::Error;
 
-use crate::compiler::BfOptimizable;
+use crate::{
+    compiler::BfOptimizable,
+    nonblocking::{nonblocking, NonBlocking},
+};
 
 use super::compiler::BfInstruc;
 
@@ -65,7 +68,6 @@ impl<T: Clone, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
             stdin: s_in,
             stdout: s_out,
             ptr: self.starting_ptr.unwrap_or(0),
-            last_flush: time::Instant::now(),
             instruction_limit: self.instruction_limit.unwrap_or(0),
         })
     }
@@ -150,7 +152,6 @@ where
     pub stdin: I,
     pub data: Box<[T]>,
     pub ptr: usize,
-    pub last_flush: time::Instant,
     pub instruction_limit: u64,
 }
 
@@ -173,10 +174,10 @@ impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
     #[must_use]
     pub fn new_stdio_locked<'i, 'o, T: Clone + Default>(
         array_len: usize,
-    ) -> BrainFuckExecutor<T, io::StdinLock<'i>, io::StdoutLock<'o>> {
+    ) -> BrainFuckExecutor<T, io::StdinLock<'i>, NonBlocking> {
         BrainFuckExecutorBuilder::new()
             .stream_in(io::stdin().lock())
-            .stream_out(io::stdout().lock())
+            .stream_out(nonblocking(io::stdout(), Duration::from_millis(10)).0)
             .array_len(array_len)
             .build()
             // This panic should not occur because the builder has been constructed with at least the minimum amount of required fields
@@ -253,12 +254,6 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     #[inline(always)]
     fn write(&mut self, v: u8) -> Result<(), BfExecErrorTy> {
         let _ = self.stdout.write(&[v])?;
-
-        // based on 60 fps update (actual 62.5)
-        if self.last_flush.elapsed().as_millis() > 16 {
-            self.stdout.flush()?;
-            self.last_flush = time::Instant::now();
-        }
 
         Ok(())
     }

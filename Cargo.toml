@@ -14,11 +14,9 @@ strip = "symbols"
 
 [dependencies]
 thiserror = "1.0"
-strum = "0.26"
-strum_macros = "0.26"
-usize_cast = "1.1.0"
 either = "1.10.0"
 clap = { version = "4.5.1", features = ["derive"] }
 clap_complete = "4.5.1"
 bytecount = "0.6.9"
 memmap2 = "0.9.8"
+crossbeam-channel = "0.5.15"

@@ -17,6 +17,7 @@ use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 
 pub mod interpreter;
 mod minibit;
+mod nonblocking;
 mod stupid;
 
 use either::Either;
@@ -24,7 +25,10 @@ use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor, BrainFuckExecut
 
 use clap::{Args, CommandFactory, Parser};
 
-use crate::minibit::{BTapeStream, BfTapeExecutor};
+use crate::{
+    minibit::{BTapeStream, BfTapeExecutor},
+    nonblocking::nonblocking,
+};
 
 #[derive(clap::ValueEnum, Clone, Copy)]
 enum Mode {
@@ -139,11 +143,10 @@ fn minibit_interpret<C: BfOptimizable>(
     }
 
     let mut engine = BfTapeExecutor {
-        stdout: std::io::stdout().lock(),
+        stdout: nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
         stdin: std::io::stdin().lock(),
         data: vec![C::ZERO; arr_len].into_boxed_slice(),
         ptr: 0,
-        last_flush: Instant::now(),
     };
 
     engine.run_stream(&stream).map_err(Either::Left)?;
@@ -167,7 +170,7 @@ fn stupid_interpret<C: BfOptimizable>(
         ptr: 0,
         data: vec![C::ZERO; arr_len].into_boxed_slice(),
         read: std::io::stdin().lock(),
-        write: std::io::stdout().lock(),
+        write: nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
     };
 
     state.run(code)

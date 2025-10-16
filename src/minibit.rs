@@ -3,7 +3,7 @@
 //! allowing guaranteed memory use equal to the size of the input tape
 
 use core::fmt;
-use std::{collections::HashMap, io, time::Instant};
+use std::{collections::HashMap, io};
 
 use crate::{
     compiler::{BfCompError, BfOptimizable},
@@ -287,7 +287,6 @@ pub struct BfTapeExecutor<T: BfOptimizable, I: io::Read, O: io::Write> {
     pub stdin: I,
     pub data: Box<[T]>,
     pub ptr: usize,
-    pub last_flush: Instant,
 }
 
 impl<T: BfOptimizable, I: io::Read, O: io::Write> BfTapeExecutor<T, I, O> {
@@ -319,13 +318,6 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BfTapeExecutor<T, I, O> {
     #[inline(always)]
     fn write(&mut self, v: u8) -> Result<(), BfExecErrorTy> {
         let _ = self.stdout.write(&[v])?;
-
-        // based on 60 fps update (actual 62.5)
-        if self.last_flush.elapsed().as_millis() > 16 {
-            self.stdout.flush()?;
-            self.last_flush = Instant::now();
-        }
-
         Ok(())
     }
 
