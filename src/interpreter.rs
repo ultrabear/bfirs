@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::{
     compiler::BfOptimizable,
     nonblocking::{nonblocking, NonBlocking},
+    state::BfState,
 };
 
 use super::compiler::BfInstruc;
@@ -62,12 +63,14 @@ impl<T: Clone, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
         let array_len = self.array_len.ok_or(NoArraySize)?;
 
         Ok(BrainFuckExecutor {
-            data: std::iter::repeat(self.fill.unwrap_or_default())
-                .take(array_len)
-                .collect(),
-            stdin: s_in,
-            stdout: s_out,
-            ptr: self.starting_ptr.unwrap_or(0),
+            state: BfState {
+                ptr: self.starting_ptr.unwrap_or(0),
+                cells: std::iter::repeat(self.fill.unwrap_or_default())
+                    .take(array_len)
+                    .collect(),
+                read: s_in,
+                write: s_out,
+            },
             instruction_limit: self.instruction_limit.unwrap_or(0),
         })
     }
@@ -148,10 +151,7 @@ where
     O: io::Write,
     I: io::Read,
 {
-    pub stdout: O,
-    pub stdin: I,
-    pub data: Box<[T]>,
-    pub ptr: usize,
+    pub state: BfState<T, I, O>,
     pub instruction_limit: u64,
 }
 
@@ -207,66 +207,9 @@ impl<T, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     pub const fn instructions_left(&self) -> u64 {
         self.instruction_limit
     }
-
-    pub const fn state(&self) -> (usize, &[T]) {
-        (self.ptr, &self.data)
-    }
-
-    pub fn state_mut(&mut self) -> (&mut usize, &mut [T]) {
-        (&mut self.ptr, &mut self.data)
-    }
-
-    pub fn destructure(self) -> (usize, Box<[T]>, I, O) {
-        (self.ptr, self.data, self.stdin, self.stdout)
-    }
 }
 
 impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
-    unsafe fn cur_unchecked(&self) -> T {
-        // SAFETY: The caller has asserted that the current pointer is a valid index
-        debug_assert!(self.ptr < self.data.len());
-        *self.data.get_unchecked(self.ptr)
-    }
-
-    unsafe fn map_current(&mut self, func: impl FnOnce(T) -> T) {
-        // SAFETY: The caller has asserted that the current pointer is a valid index
-        debug_assert!(self.ptr < self.data.len());
-        *self.data.get_unchecked_mut(self.ptr) = func(self.cur_unchecked());
-    }
-
-    fn inc_ptr_by(&mut self, v: usize) -> Result<(), BfExecErrorTy> {
-        self.ptr += v;
-        if self.ptr >= self.data.len() {
-            self.ptr -= v;
-            return Err(BfExecErrorTy::Overflow);
-        }
-        Ok(())
-    }
-
-    fn dec_ptr_by(&mut self, v: usize) -> Result<(), BfExecErrorTy> {
-        self.ptr = self.ptr.checked_sub(v).ok_or(BfExecErrorTy::Underflow)?;
-        Ok(())
-    }
-
-    // inlining this increases performance on mandelbrot, probably thanks to reg cramming
-    // im sorry clippy, the numbers are real this time
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn write(&mut self, v: u8) -> Result<(), BfExecErrorTy> {
-        let _ = self.stdout.write(&[v])?;
-
-        Ok(())
-    }
-
-    fn read(&mut self) -> Result<u8, BfExecErrorTy> {
-        // flush so the end user always gets prompts
-        self.stdout.flush()?;
-
-        let mut v = [0];
-        let _ = self.stdin.read(&mut v)?;
-        Ok(v[0])
-    }
-
     // this inline(always) measurably increases performance (8.9s to 7.2s on mandelbrot) most probably
     // because if its not inlined it cant get enough context to optimize for what its being called
     // with (like the runtime const arguments that run and run_limited pass)
@@ -279,11 +222,8 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
         use BfInstruc::*;
 
         // SAFETY: check ptr bounds now to ensure they are valid before a _unchecked op is called without a ptr mutating op
-        if self.ptr >= self.data.len() {
-            return Err(BfExecError {
-                source: BfExecErrorTy::InitOverflow,
-                idx,
-            });
+        if let Err(source) = self.state.validate_init_ptr() {
+            return Err(BfExecError { source, idx });
         }
 
         if LIMIT_INSTRUCTIONS && self.instruction_limit == 0 {
@@ -306,47 +246,43 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
                 // TODO: try block :plead:
                 (|| match stream[idx] {
                     Zero => {
-                        self.map_current(|_| T::ZERO);
+                        self.state.zero();
                         Ok(())
                     }
                     Inc => {
-                        self.map_current(|c| c.wrapping_add(T::from(1)));
+                        self.state.inc(1.into());
                         Ok(())
                     }
                     Dec => {
-                        self.map_current(|c| c.wrapping_sub(T::from(1)));
+                        self.state.dec(1.into());
                         Ok(())
                     }
-                    IncPtr => self.inc_ptr_by(1),
-                    DecPtr => self.dec_ptr_by(1),
-                    Write => self.write(self.cur_unchecked().truncate_u8()),
-                    Read => {
-                        let v = self.read()?.into();
-                        self.map_current(|_| v);
-                        Ok(())
-                    }
+                    IncPtr => self.state.inc_ptr(1),
+                    DecPtr => self.state.dec_ptr(1),
+                    Write => self.state.write(),
+                    Read => self.state.read(),
                     LStart(end) => {
-                        if self.cur_unchecked() == T::ZERO {
+                        if self.state.jump_forward() {
                             idx = end as usize;
                         }
                         Ok(())
                     }
                     LEnd(start) => {
-                        if self.cur_unchecked() != T::ZERO {
+                        if self.state.jump_backward() {
                             idx = start as usize;
                         }
                         Ok(())
                     }
                     IncBy(val) => {
-                        self.map_current(|c| c.wrapping_add(val));
+                        self.state.inc(val);
                         Ok(())
                     }
                     DecBy(val) => {
-                        self.map_current(|c| c.wrapping_sub(val));
+                        self.state.dec(val);
                         Ok(())
                     }
-                    IncPtrBy(val) => self.inc_ptr_by(val.get() as usize),
-                    DecPtrBy(val) => self.dec_ptr_by(val.get() as usize),
+                    IncPtrBy(val) => self.state.inc_ptr(val.get() as usize),
+                    DecPtrBy(val) => self.state.dec_ptr(val.get() as usize),
                 })()
                 .map_err(|source| BfExecError { source, idx })?;
             }

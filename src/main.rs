@@ -18,6 +18,7 @@ use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 pub mod interpreter;
 mod minibit;
 mod nonblocking;
+mod state;
 mod stupid;
 
 use either::Either;
@@ -25,10 +26,7 @@ use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor, BrainFuckExecut
 
 use clap::{Args, CommandFactory, Parser};
 
-use crate::{
-    minibit::{BTapeStream, BfTapeExecutor},
-    nonblocking::nonblocking,
-};
+use crate::{minibit::BTapeStream, nonblocking::nonblocking};
 
 #[derive(clap::ValueEnum, Clone, Copy)]
 enum Mode {
@@ -142,14 +140,14 @@ fn minibit_interpret<C: BfOptimizable>(
         return Ok(());
     }
 
-    let mut engine = BfTapeExecutor {
-        stdout: nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
-        stdin: std::io::stdin().lock(),
-        data: vec![C::ZERO; arr_len].into_boxed_slice(),
+    let mut bstate = state::BfState {
+        write: nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
+        read: std::io::stdin().lock(),
+        cells: vec![C::ZERO; arr_len].into_boxed_slice(),
         ptr: 0,
     };
 
-    engine.run_stream(&stream).map_err(Either::Left)?;
+    stream.run(&mut bstate).map_err(Either::Left)?;
 
     Ok(())
 }
@@ -166,14 +164,14 @@ fn stupid_interpret<C: BfOptimizable>(
 
     let arr_len = arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(code, b'>'), 30_000));
 
-    let mut state = stupid::BfState {
+    let mut state = state::BfState {
         ptr: 0,
-        data: vec![C::ZERO; arr_len].into_boxed_slice(),
+        cells: vec![C::ZERO; arr_len].into_boxed_slice(),
         read: std::io::stdin().lock(),
         write: nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
     };
 
-    state.run(code)
+    stupid::interpret(code, &mut state)
 }
 
 fn interpret<CellSize: BfOptimizable + Debug>(
@@ -250,11 +248,11 @@ fn render_c_deadline<CellSize: BfOptimizable>(
             Ok(()) => {
                 code.render_interpreted_c(
                     &BfExecState {
-                        cursor: execenv.ptr,
-                        data: &execenv.data,
+                        cursor: execenv.state.ptr,
+                        data: &execenv.state.cells,
                         instruction_pointer: None,
                     },
-                    &execenv.stdout,
+                    &execenv.state.write,
                     fp,
                 )?;
                 break;
@@ -269,11 +267,11 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                 BfExecErrorTy::IOError(_) => {
                     code.render_interpreted_c(
                         &BfExecState {
-                            cursor: execenv.ptr,
-                            data: &execenv.data,
+                            cursor: execenv.state.ptr,
+                            data: &execenv.state.cells,
                             instruction_pointer: Some(idx),
                         },
-                        &execenv.stdout,
+                        &execenv.state.write,
                         fp,
                     )?;
                     break;
@@ -284,11 +282,11 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                     if Instant::now() > deadline {
                         code.render_interpreted_c(
                             &BfExecState {
-                                cursor: execenv.ptr,
-                                data: &execenv.data,
+                                cursor: execenv.state.ptr,
+                                data: &execenv.state.cells,
                                 instruction_pointer: Some(idx),
                             },
-                            &execenv.stdout,
+                            &execenv.state.write,
                             fp,
                         )?;
                         break;
