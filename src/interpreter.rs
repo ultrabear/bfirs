@@ -1,5 +1,9 @@
 use core::fmt;
-use std::{hint::black_box, io, time::Duration};
+use std::{
+    hint::black_box,
+    io::{self, StdinLock},
+    time::Duration,
+};
 use thiserror::Error;
 
 use crate::{
@@ -9,114 +13,6 @@ use crate::{
 };
 
 use super::compiler::BfInstruc;
-
-#[derive(Error, Debug, Copy, Clone)]
-pub enum ExecutorBuilderError {
-    #[error("no input stream was specified")]
-    NoStreamIn,
-    #[error("no output stream was specified")]
-    NoStreamOut,
-    #[error("no array size was specified")]
-    NoArraySize,
-}
-
-pub struct BrainFuckExecutorBuilder<T, I, O> {
-    stdout: Option<O>,
-    stdin: Option<I>,
-    array_len: Option<usize>,
-    starting_ptr: Option<usize>,
-    fill: Option<T>,
-    instruction_limit: Option<u64>,
-}
-
-impl<T: Clone, I: io::Read, O: io::Write> Default for BrainFuckExecutorBuilder<T, I, O> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<T: Clone, I: io::Read, O: io::Write> BrainFuckExecutorBuilder<T, I, O> {
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            stdout: None,
-            stdin: None,
-            array_len: None,
-            starting_ptr: None,
-            fill: None,
-            instruction_limit: None,
-        }
-    }
-
-    /// Builds the executor
-    ///
-    /// # Errors
-    /// This function will error if no stream in/out is specified or if no array size is specified
-    pub fn build(self) -> Result<BrainFuckExecutor<T, I, O>, ExecutorBuilderError>
-    where
-        T: Default,
-    {
-        use ExecutorBuilderError::{NoArraySize, NoStreamIn, NoStreamOut};
-
-        let s_out = self.stdout.ok_or(NoStreamOut)?;
-        let s_in = self.stdin.ok_or(NoStreamIn)?;
-        let array_len = self.array_len.ok_or(NoArraySize)?;
-
-        Ok(BrainFuckExecutor {
-            state: BfState {
-                ptr: self.starting_ptr.unwrap_or(0),
-                cells: std::iter::repeat(self.fill.unwrap_or_default())
-                    .take(array_len)
-                    .collect(),
-                read: s_in,
-                write: s_out,
-            },
-            instruction_limit: self.instruction_limit.unwrap_or(0),
-        })
-    }
-
-    #[must_use]
-    pub fn stream_in(mut self, s: I) -> Self {
-        self.stdin = Some(s);
-
-        self
-    }
-
-    #[must_use]
-    pub fn stream_out(mut self, s: O) -> Self {
-        self.stdout = Some(s);
-
-        self
-    }
-
-    #[must_use]
-    pub fn fill(mut self, fill: T) -> Self {
-        self.fill = Some(fill);
-
-        self
-    }
-
-    #[must_use]
-    pub const fn array_len(mut self, v: usize) -> Self {
-        self.array_len = Some(v);
-
-        self
-    }
-
-    #[must_use]
-    pub const fn starting_ptr(mut self, ptr: usize) -> Self {
-        self.starting_ptr = Some(ptr);
-
-        self
-    }
-
-    #[must_use]
-    pub const fn limit(mut self, limit: u64) -> Self {
-        self.instruction_limit = Some(limit);
-
-        self
-    }
-}
 
 #[derive(Debug, Error)]
 pub struct BfExecError {
@@ -155,34 +51,22 @@ where
     pub instruction_limit: u64,
 }
 
-impl BrainFuckExecutor<(), io::Stdin, io::Stdout> {
-    #[allow(clippy::missing_panics_doc)]
-    #[must_use]
-    pub fn new_stdio<T: Clone + Default>(
-        array_len: usize,
-    ) -> BrainFuckExecutor<T, io::Stdin, io::Stdout> {
-        BrainFuckExecutorBuilder::new()
-            .stream_in(io::stdin())
-            .stream_out(io::stdout())
-            .array_len(array_len)
-            .build()
-            // This panic should not occur because the builder has been constructed with at least the minimum amount of required fields
-            .expect("this panic should not occur, minimum builder fields are present")
-    }
-
-    #[allow(clippy::missing_panics_doc)]
-    #[must_use]
-    pub fn new_stdio_locked<'i, 'o, T: Clone + Default>(
-        array_len: usize,
-    ) -> BrainFuckExecutor<T, io::StdinLock<'i>, NonBlocking> {
-        BrainFuckExecutorBuilder::new()
-            .stream_in(io::stdin().lock())
-            .stream_out(nonblocking(io::stdout(), Duration::from_millis(10)).0)
-            .array_len(array_len)
-            .build()
-            // This panic should not occur because the builder has been constructed with at least the minimum amount of required fields
-            .expect("this panic should not occur, minimum builder fields are present")
-    }
+pub fn new_stdio<T: BfOptimizable>(
+    size: usize,
+) -> Result<BrainFuckExecutor<T, StdinLock<'static>, NonBlocking>, BfExecError> {
+    Ok(BrainFuckExecutor {
+        state: BfState::new(
+            0,
+            vec![T::ZERO; size].into_boxed_slice(),
+            io::stdin().lock(),
+            nonblocking(io::stdout(), Duration::from_millis(10)).0,
+        )
+        .map_err(|_| BfExecError {
+            source: BfExecErrorTy::InitOverflow,
+            idx: 0,
+        })?,
+        instruction_limit: 0,
+    })
 }
 
 #[derive(Debug, Error)]
@@ -221,11 +105,6 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     ) -> Result<(), BfExecError> {
         use BfInstruc::*;
 
-        // SAFETY: check ptr bounds now to ensure they are valid before a _unchecked op is called without a ptr mutating op
-        if let Err(source) = self.state.validate_init_ptr() {
-            return Err(BfExecError { source, idx });
-        }
-
         if LIMIT_INSTRUCTIONS && self.instruction_limit == 0 {
             return Err(BfExecError {
                 source: BfExecErrorTy::NotEnoughInstructions,
@@ -242,50 +121,48 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
                 });
             }
 
-            unsafe {
-                // TODO: try block :plead:
-                (|| match stream[idx] {
-                    Zero => {
-                        self.state.zero();
-                        Ok(())
+            // TODO: try block :plead:
+            (|| match stream[idx] {
+                Zero => {
+                    self.state.zero();
+                    Ok(())
+                }
+                Inc => {
+                    self.state.inc(1.into());
+                    Ok(())
+                }
+                Dec => {
+                    self.state.dec(1.into());
+                    Ok(())
+                }
+                IncPtr => self.state.inc_ptr(1),
+                DecPtr => self.state.dec_ptr(1),
+                Write => self.state.write(),
+                Read => self.state.read(),
+                LStart(end) => {
+                    if self.state.jump_forward() {
+                        idx = end as usize;
                     }
-                    Inc => {
-                        self.state.inc(1.into());
-                        Ok(())
+                    Ok(())
+                }
+                LEnd(start) => {
+                    if self.state.jump_backward() {
+                        idx = start as usize;
                     }
-                    Dec => {
-                        self.state.dec(1.into());
-                        Ok(())
-                    }
-                    IncPtr => self.state.inc_ptr(1),
-                    DecPtr => self.state.dec_ptr(1),
-                    Write => self.state.write(),
-                    Read => self.state.read(),
-                    LStart(end) => {
-                        if self.state.jump_forward() {
-                            idx = end as usize;
-                        }
-                        Ok(())
-                    }
-                    LEnd(start) => {
-                        if self.state.jump_backward() {
-                            idx = start as usize;
-                        }
-                        Ok(())
-                    }
-                    IncBy(val) => {
-                        self.state.inc(val);
-                        Ok(())
-                    }
-                    DecBy(val) => {
-                        self.state.dec(val);
-                        Ok(())
-                    }
-                    IncPtrBy(val) => self.state.inc_ptr(val.get() as usize),
-                    DecPtrBy(val) => self.state.dec_ptr(val.get() as usize),
-                })()
-                .map_err(|source| BfExecError { source, idx })?;
-            }
+                    Ok(())
+                }
+                IncBy(val) => {
+                    self.state.inc(val);
+                    Ok(())
+                }
+                DecBy(val) => {
+                    self.state.dec(val);
+                    Ok(())
+                }
+                IncPtrBy(val) => self.state.inc_ptr(val.get() as usize),
+                DecPtrBy(val) => self.state.dec_ptr(val.get() as usize),
+            })()
+            .map_err(|source| BfExecError { source, idx })?;
 
             idx += 1;
 
@@ -363,13 +240,16 @@ impl<T: BfOptimizable, I: io::Read, O: io::Write> BrainFuckExecutor<T, I, O> {
     ) -> Result<u128, BfExecError> {
         const SAMPLE: u32 = 100_000;
 
-        let mut exec = BrainFuckExecutorBuilder::<T, io::Empty, io::Sink>::new()
-            .stream_in(io::empty())
-            .stream_out(io::sink())
-            .array_len(30_000)
-            .limit(SAMPLE.into())
-            .build()
-            .unwrap();
+        let mut exec = BrainFuckExecutor {
+            state: BfState::new(
+                0,
+                vec![T::ZERO; 30_000].into_boxed_slice(),
+                io::empty(),
+                io::sink(),
+            )
+            .unwrap_or_else(|_| panic!()),
+            instruction_limit: SAMPLE.into(),
+        };
 
         let start = time::Instant::now();
 
@@ -402,7 +282,7 @@ fn test_exec_env() {
         |code: &str| BfInstructionStream::optimized_from_text(code.bytes(), None).unwrap();
 
     let run_code = |x: &str| {
-        let mut env = BrainFuckExecutor::new_stdio::<u8>(30_000);
+        let mut env = new_stdio::<u8>(30_000).expect("Nonzero");
 
         env.run(&parse_bf(x)).unwrap();
     };
@@ -410,13 +290,17 @@ fn test_exec_env() {
     let expect_output = |code: &str, expect: &str| {
         let mut outv = Vec::new();
 
-        let mut env = BrainFuckExecutorBuilder::<u8, _, _>::new()
-            .stream_in(io::empty())
-            .stream_out(&mut outv)
-            .array_len(30_000)
-            .build()
-            .unwrap();
-
+        let mut env = BrainFuckExecutor {
+            state: BfState::new(
+                0,
+                vec![0u8; 30_000].into_boxed_slice(),
+                io::empty(),
+                &mut outv,
+            )
+            .map_err(|_| ())
+            .unwrap(),
+            instruction_limit: 0,
+        };
         env.run(&parse_bf(code)).unwrap();
 
         if outv != expect.as_bytes() {
@@ -426,7 +310,7 @@ fn test_exec_env() {
 
     macro_rules! expect_error {
         ($s:expr, $err:pat, $rep:expr) => {
-            let mut env = BrainFuckExecutor::new_stdio::<u8>(30_000);
+            let mut env = new_stdio::<u8>(30_000).expect("Nonzero");
 
             env.add_instruction_limit(1_000_000).unwrap();
 

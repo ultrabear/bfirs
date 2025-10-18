@@ -22,7 +22,7 @@ mod state;
 mod stupid;
 
 use either::Either;
-use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor, BrainFuckExecutorBuilder};
+use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor};
 
 use clap::{Args, CommandFactory, Parser};
 
@@ -140,12 +140,18 @@ fn minibit_interpret<C: BfOptimizable>(
         return Ok(());
     }
 
-    let mut bstate = state::BfState {
-        write: nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
-        read: std::io::stdin().lock(),
-        cells: vec![C::ZERO; arr_len].into_boxed_slice(),
-        ptr: 0,
-    };
+    let mut bstate = state::BfState::new(
+        0,
+        vec![C::ZERO; arr_len].into_boxed_slice(),
+        std::io::stdin().lock(),
+        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
+    )
+    .map_err(|_| {
+        Either::Left(BfExecError {
+            source: BfExecErrorTy::InitOverflow,
+            idx: 0,
+        })
+    })?;
 
     stream.run(&mut bstate).map_err(Either::Left)?;
 
@@ -164,12 +170,18 @@ fn stupid_interpret<C: BfOptimizable>(
 
     let arr_len = arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(code, b'>'), 30_000));
 
-    let mut state = state::BfState {
-        ptr: 0,
-        cells: vec![C::ZERO; arr_len].into_boxed_slice(),
-        read: std::io::stdin().lock(),
-        write: nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
-    };
+    let mut state = state::BfState::new(
+        0,
+        vec![C::ZERO; arr_len].into_boxed_slice(),
+        std::io::stdin().lock(),
+        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
+    )
+    .map_err(|_| {
+        Either::Left(BfExecError {
+            source: BfExecErrorTy::InitOverflow,
+            idx: 0,
+        })
+    })?;
 
     stupid::interpret(code, &mut state)
 }
@@ -196,7 +208,7 @@ fn interpret<CellSize: BfOptimizable + Debug>(
     }
 
     let mut execenv =
-        BrainFuckExecutor::new_stdio_locked::<CellSize>(code.reccomended_array_size());
+        interpreter::new_stdio::<CellSize>(code.reccomended_array_size()).map_err(Either::Left)?;
 
     match args.limit {
         Some(lim) => {
@@ -225,12 +237,19 @@ fn render_c_deadline<CellSize: BfOptimizable>(
     secs: u32,
     fp: &mut dyn io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut execenv = BrainFuckExecutorBuilder::<CellSize, _, _>::new()
-        .array_len(code.reccomended_array_size())
-        .stream_in(ErrorReader)
-        .stream_out(vec![])
-        .build()
-        .unwrap();
+    let mut execenv = BrainFuckExecutor {
+        state: state::BfState::new(
+            0,
+            vec![CellSize::ZERO; code.reccomended_array_size()].into_boxed_slice(),
+            ErrorReader,
+            vec![],
+        )
+        .map_err(|_| BfExecError {
+            source: BfExecErrorTy::InitOverflow,
+            idx: 0,
+        })?,
+        instruction_limit: 0,
+    };
 
     let est =
         u64::try_from(BrainFuckExecutor::<CellSize, ErrorReader, Vec<u8>>::estimate_instructions_per_second(
@@ -248,8 +267,8 @@ fn render_c_deadline<CellSize: BfOptimizable>(
             Ok(()) => {
                 code.render_interpreted_c(
                     &BfExecState {
-                        cursor: execenv.state.ptr,
-                        data: &execenv.state.cells,
+                        cursor: execenv.state.ptr(),
+                        data: execenv.state.cells(),
                         instruction_pointer: None,
                     },
                     &execenv.state.write,
@@ -267,8 +286,8 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                 BfExecErrorTy::IOError(_) => {
                     code.render_interpreted_c(
                         &BfExecState {
-                            cursor: execenv.state.ptr,
-                            data: &execenv.state.cells,
+                            cursor: execenv.state.ptr(),
+                            data: execenv.state.cells(),
                             instruction_pointer: Some(idx),
                         },
                         &execenv.state.write,
@@ -282,8 +301,8 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                     if Instant::now() > deadline {
                         code.render_interpreted_c(
                             &BfExecState {
-                                cursor: execenv.state.ptr,
-                                data: &execenv.state.cells,
+                                cursor: execenv.state.ptr(),
+                                data: execenv.state.cells(),
                                 instruction_pointer: Some(idx),
                             },
                             &execenv.state.write,

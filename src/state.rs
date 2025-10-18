@@ -6,44 +6,68 @@ use crate::{compiler::BfOptimizable, interpreter::BfExecErrorTy};
 
 /// The state of a bf programs memory region
 pub struct BfState<C, I, O> {
-    pub ptr: usize,
-    pub cells: Box<[C]>,
+    ptr: usize,
+    cells: Box<[C]>,
     pub read: I,
     pub write: O,
 }
 
+impl<C, I, O> BfState<C, I, O> {
+    /// Attempts to construct a new checked BfState
+    pub fn new(
+        ptr: usize,
+        cells: Box<[C]>,
+        read: I,
+        write: O,
+    ) -> Result<Self, (usize, Box<[C]>, I, O)> {
+        if ptr < cells.len() {
+            Ok(Self {
+                ptr,
+                cells,
+                read,
+                write,
+            })
+        } else {
+            Err((ptr, cells, read, write))
+        }
+    }
+
+    pub fn ptr(&self) -> usize {
+        self.ptr
+    }
+
+    pub fn cells(&self) -> &[C] {
+        &self.cells
+    }
+}
+
 impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
     #[inline(always)]
-    pub fn validate_init_ptr(&self) -> Result<(), BfExecErrorTy> {
-        if self.ptr < self.cells.len() {
-            Ok(())
-        } else {
-            Err(BfExecErrorTy::InitOverflow)
+    pub fn get(&self) -> C {
+        // SAFETY: ptr<self.cells.len() is always upheld
+        unsafe { *self.cells.get_unchecked(self.ptr) }
+    }
+
+    #[inline(always)]
+    pub fn set(&mut self, data: C) {
+        // SAFETY: ptr<self.cells.len() is always upheld
+        unsafe {
+            *self.cells.get_unchecked_mut(self.ptr) = data;
         }
     }
 
     #[inline(always)]
-    pub unsafe fn get(&self) -> C {
-        *self.cells.get_unchecked(self.ptr)
-    }
-
-    #[inline(always)]
-    pub unsafe fn set(&mut self, data: C) {
-        *self.cells.get_unchecked_mut(self.ptr) = data;
-    }
-
-    #[inline(always)]
-    pub unsafe fn map<F: FnOnce(C) -> C>(&mut self, transform: F) {
+    pub fn map<F: FnOnce(C) -> C>(&mut self, transform: F) {
         self.set(transform(self.get()))
     }
 
     #[inline(always)]
-    pub unsafe fn zero(&mut self) {
+    pub fn zero(&mut self) {
         self.set(C::ZERO);
     }
 
     #[inline(always)]
-    pub unsafe fn write(&mut self) -> Result<(), BfExecErrorTy> {
+    pub fn write(&mut self) -> Result<(), BfExecErrorTy> {
         let cell = self.get().truncate_u8();
 
         self.write.write(&[cell])?;
@@ -52,7 +76,7 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
     }
 
     #[inline(always)]
-    pub unsafe fn read(&mut self) -> Result<(), BfExecErrorTy> {
+    pub fn read(&mut self) -> Result<(), BfExecErrorTy> {
         self.write.flush()?;
 
         let mut out = [0u8; 1];
@@ -64,12 +88,12 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
     }
 
     #[inline(always)]
-    pub unsafe fn inc(&mut self, by: C) {
+    pub fn inc(&mut self, by: C) {
         self.map(|c| c.wrapping_add(by))
     }
 
     #[inline(always)]
-    pub unsafe fn dec(&mut self, by: C) {
+    pub fn dec(&mut self, by: C) {
         self.map(|c| c.wrapping_sub(by))
     }
 
@@ -78,6 +102,7 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
         match self.ptr.checked_add(by) {
             Some(incremented) => {
                 if incremented < self.cells.len() {
+                    // NOTE: SAFETY INVARIANT
                     self.ptr = incremented;
                     Ok(())
                 } else {
@@ -92,6 +117,7 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
     pub fn dec_ptr(&mut self, by: usize) -> Result<(), BfExecErrorTy> {
         match self.ptr.checked_sub(by) {
             Some(decrement) => {
+                // NOTE: SAFETY INVARIANT
                 self.ptr = decrement;
                 Ok(())
             }
@@ -100,12 +126,12 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
     }
 
     #[inline(always)]
-    pub unsafe fn jump_forward(&self) -> bool {
+    pub fn jump_forward(&self) -> bool {
         self.get() == C::ZERO
     }
 
     #[inline(always)]
-    pub unsafe fn jump_backward(&self) -> bool {
+    pub fn jump_backward(&self) -> bool {
         self.get() != C::ZERO
     }
 }

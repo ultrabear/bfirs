@@ -290,16 +290,11 @@ impl BTapeStream {
     ) -> Result<(), BfExecError> {
         let mut idx = 0;
 
-        // SAFETY: check ptr bounds now to ensure they are valid before a _unchecked op is called without a ptr mutating op
-        if let Err(source) = state.validate_init_ptr() {
-            return Err(BfExecError { source, idx });
-        }
-
         while idx < self.0.len() {
             match Instr::decode(self.0[idx]) {
-                (Instr::Zero, _) => unsafe { state.zero() },
-                (Instr::Inc, by) => unsafe { state.inc(C::from(by).wrapping_add(C::from(1))) },
-                (Instr::Dec, by) => unsafe { state.dec(C::from(by).wrapping_add(C::from(1))) },
+                (Instr::Zero, _) => state.zero(),
+                (Instr::Inc, by) => state.inc(C::from(by).wrapping_add(C::from(1))),
+                (Instr::Dec, by) => state.dec(C::from(by).wrapping_add(C::from(1))),
                 (Instr::IncPtr, by) => {
                     state
                         .inc_ptr(by as usize + 1)
@@ -311,7 +306,7 @@ impl BTapeStream {
                         .map_err(|s| BfExecError { source: s, idx })?;
                 }
                 (Instr::LStart, off) => {
-                    if unsafe { state.jump_forward() } {
+                    if state.jump_forward() {
                         idx = if off != 0 {
                             idx + off as usize
                         } else {
@@ -320,7 +315,7 @@ impl BTapeStream {
                     }
                 }
                 (Instr::LEnd, off) => {
-                    if unsafe { state.jump_backward() } {
+                    if state.jump_backward() {
                         idx = if off != 0 {
                             idx - off as usize
                         } else {
@@ -330,12 +325,12 @@ impl BTapeStream {
                 }
                 // SAFETY: A valid BTapeStream has valid WildArgs
                 (Instr::Wild, kind) => match unsafe { WildArgs::from_wild(kind) } {
-                    WildArgs::Read => unsafe {
+                    WildArgs::Read => {
                         state.read().map_err(|s| BfExecError { source: s, idx })?;
-                    },
-                    WildArgs::Write => unsafe {
+                    }
+                    WildArgs::Write => {
                         state.write().map_err(|s| BfExecError { source: s, idx })?;
-                    },
+                    }
                     WildArgs::IncPtrMany => {
                         // SAFETY: Valid IncPtrMany has 8 LE bytes that encodes its operand
                         let operand = unsafe {
