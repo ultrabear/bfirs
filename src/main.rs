@@ -20,6 +20,7 @@ mod minibit;
 mod nonblocking;
 mod state;
 mod stupid;
+mod ir;
 
 use either::Either;
 use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor};
