@@ -2,6 +2,7 @@
 
 use std::ops::Range;
 
+use crate::compiler::BfCompError;
 
 pub enum Token {
     Zero,
@@ -15,6 +16,91 @@ pub enum Token {
     LEnd,
 }
 
+impl Token {
+    pub fn parse(data: &[u8]) -> Vec<Self> {
+        let mut valid = data.iter().filter(|b| b"+-><[],.".contains(b)).copied();
+
+        let mut out = vec![];
+
+        while let Some(byte) = valid.next() {
+            match byte {
+                b'.' => out.push(Self::Write),
+                b',' => out.push(Self::Read),
+                b'[' => {
+                    let mut peek = valid.clone();
+
+                    if let (Some(b'+' | b'-'), Some(b']')) = (peek.next(), peek.next()) {
+                        out.push(Self::Zero);
+                        valid = peek;
+                    } else {
+                        out.push(Self::LStart);
+                    }
+                }
+                b']' => out.push(Self::LEnd),
+                initial @ (b'+' | b'-' | b'>' | b'<') => {
+                    let mut count = 1usize;
+
+                    let mut peek = valid.clone();
+
+                    while Some(initial) == peek.next() {
+                        count += 1;
+                        valid = peek.clone();
+                    }
+
+                    out.push(match initial {
+                        b'+' => Self::Inc(count as u32),
+                        b'-' => Self::Dec(count as u32),
+                        b'>' => Self::IncPtr(count),
+                        b'<' => Self::DecPtr(count),
+                        _ => unreachable!(),
+                    });
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        out
+    }
+
+    pub fn to_tree(this: &[Self]) -> Result<Vec<ITree>, BfCompError> {
+        let mut out = vec![];
+        let mut ctx: Vec<usize> = vec![];
+
+        macro_rules! push {
+            ($e:expr) => {{
+                let mut ptr = &mut out;
+
+                for idx in &ctx {
+                    let (ITree::Loop(data) | ITree::WriteLoop(data)) = &mut ptr[*idx] else {
+                        unreachable!()
+                    };
+
+                    ptr = data;
+                }
+
+                ptr.push($e);
+            }};
+        }
+
+        for tok in this {
+            match tok {
+                Token::Zero => push!(ITree::Zero),
+                Token::Inc(by) => push!(ITree::Inc(*by)),
+                Token::Dec(by) => push!(ITree::Dec(*by)),
+                Token::IncPtr(by) => push!(ITree::IncPtr(*by)),
+                Token::DecPtr(by) => push!(ITree::DecPtr(*by)),
+                Token::Read => push!(ITree::Read),
+                Token::Write => push!(ITree::Write),
+                Token::LStart => {
+todo!()
+                },
+                Token::LEnd => todo!(),
+            }
+        }
+
+        Ok(out)
+    }
+}
 
 pub struct MulArg {
     offset: isize,
