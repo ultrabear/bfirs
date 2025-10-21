@@ -142,6 +142,11 @@ pub trait BfOptimizable:
     fn wrapping_sub(self, other: Self) -> Self;
 
     #[must_use]
+    fn truncate_from(v: u32) -> Self;
+
+    fn add(&mut self, v: i64);
+
+    #[must_use]
     fn truncate_u8(self) -> u8;
 }
 
@@ -158,6 +163,14 @@ macro_rules! make_optimizable {
 
             fn wrapping_sub(self, other: Self) -> Self {
                 self.wrapping_sub(other)
+            }
+
+            fn truncate_from(v: u32) -> Self {
+                v as $Ty
+            }
+
+            fn add(&mut self, v: i64) {
+                *self = (*self as i64).wrapping_add(v) as $Ty;
             }
 
             fn truncate_u8(self) -> u8 {

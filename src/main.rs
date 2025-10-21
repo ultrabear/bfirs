@@ -16,11 +16,11 @@ use clap_complete::{generate, Shell};
 use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 
 pub mod interpreter;
+mod ir;
 mod minibit;
 mod nonblocking;
 mod state;
 mod stupid;
-mod ir;
 
 use either::Either;
 use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor};
@@ -44,6 +44,7 @@ enum InterpreterType {
     Standard,
     Minibit,
     Stupid,
+    O,
 }
 
 #[derive(Parser)]
@@ -187,6 +188,44 @@ fn stupid_interpret<C: BfOptimizable>(
     stupid::interpret(code, &mut state)
 }
 
+fn o_interpret<C: BfOptimizable>(
+    code: &[u8],
+    arr_len: Option<usize>,
+    print: bool,
+) -> Result<(), Either<BfExecError, BfCompError>> {
+    let arr_len = arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(code, b'>'), 30_000));
+
+    let tt = ir::Token::parse(code);
+
+    let mut dag = ir::Token::to_tree(&tt).map_err(Either::Right)?;
+
+    ir::rewrite_zero(&mut dag);
+    ir::rewrite_multiply(&mut dag);
+    ir::rewrite_write_loops(&mut dag);
+
+    let stream = ir::ITree::synthesize(&dag);
+
+    if print {
+        println!("{stream:?}");
+        return Ok(());
+    }
+
+    let mut state = state::BfState::new(
+        0,
+        vec![C::ZERO; arr_len].into_boxed_slice(),
+        std::io::stdin().lock(),
+        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
+    )
+    .map_err(|_| {
+        Either::Left(BfExecError {
+            source: BfExecErrorTy::InitOverflow,
+            idx: 0,
+        })
+    })?;
+
+    stream.run(&mut state).map_err(Either::Left)
+}
+
 fn interpret<CellSize: BfOptimizable + Debug>(
     code: &[u8],
     arr_len: Option<usize>,
@@ -198,6 +237,7 @@ fn interpret<CellSize: BfOptimizable + Debug>(
             return minibit_interpret::<CellSize>(code, arr_len, args.print);
         }
         InterpreterType::Stupid => return stupid_interpret::<CellSize>(code, arr_len, args.print),
+        InterpreterType::O => return o_interpret::<CellSize>(code, arr_len, args.print),
     }
 
     let code = BfInstructionStream::optimized_from_text(code.iter().copied(), arr_len)

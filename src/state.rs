@@ -1,6 +1,6 @@
 //! Base types with common implementations
 
-use std::io;
+use std::{io, ops::Range};
 
 use crate::{compiler::BfOptimizable, interpreter::BfExecErrorTy};
 
@@ -133,5 +133,36 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
     #[inline(always)]
     pub fn jump_backward(&self) -> bool {
         self.get() != C::ZERO
+    }
+
+    #[inline(always)]
+    pub unsafe fn mul(
+        &mut self,
+        bounds: &Range<isize>,
+        operators: impl Iterator<Item = (isize, i64)>,
+    ) -> Result<(), BfExecErrorTy> {
+        let Some(lower) = self.ptr().checked_add_signed(bounds.start) else {
+            return Err(BfExecErrorTy::Underflow);
+        };
+        let Some(upper) = self.ptr().checked_add_signed(bounds.end) else {
+            return Err(BfExecErrorTy::Underflow);
+        };
+        let true = lower < self.cells.len() else {
+            return Err(BfExecErrorTy::Overflow);
+        };
+        let true = upper < self.cells.len() else {
+            return Err(BfExecErrorTy::Overflow);
+        };
+
+        let by = i64::from(self.get().into());
+        self.zero();
+
+        for (offset, diff) in operators {
+            let idx = (self.ptr as isize).unchecked_add(offset) as usize;
+
+            self.cells.get_unchecked_mut(idx).add(by * diff);
+        }
+
+        Ok(())
     }
 }
