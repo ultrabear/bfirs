@@ -136,6 +136,7 @@ pub struct MulArg {
 pub enum ITree {
     Zero,
     Mul(Range<isize>, Vec<MulArg>),
+    //ZeroRange(u32),
     Inc(u32),
     Dec(u32),
     IncPtr(usize),
@@ -143,6 +144,7 @@ pub enum ITree {
     Read,
     Write,
     Loop(Vec<ITree>),
+    If(Vec<ITree>),
     WriteLoop(Vec<ITree>),
 }
 
@@ -155,8 +157,22 @@ impl ITree {
         matches!(this, [Self::Inc(1)] | [Self::Dec(1)])
     }
 
+    fn terminating_nested_len(this: &[Self]) -> usize {
+        this.len()
+            + this
+                .iter()
+                .map(|v| {
+                    if let Self::If(children) = v {
+                        Self::terminating_nested_len(children)
+                    } else {
+                        0
+                    }
+                })
+                .sum::<usize>()
+    }
+
     fn is_writeloop(this: &[Self]) -> bool {
-        this.len() < 32
+        Self::terminating_nested_len(this) < 32
             && this
                 .iter()
                 .all(|c| c.terminates() & !matches!(c, Self::Read))
@@ -164,9 +180,9 @@ impl ITree {
     }
 
     fn as_multiply(this: &[Self]) -> Option<(Range<isize>, Vec<MulArg>)> {
-        const Z_OFFSET: usize = 32;
+        const Z_OFFSET: usize = 64;
 
-        let mut minivm = [0i64; 64];
+        let mut minivm = [0i64; 128];
         let mut idx = Z_OFFSET;
 
         let mut bounds = 0..0isize;
@@ -178,7 +194,8 @@ impl ITree {
                 | Self::Read
                 | Self::Write
                 | Self::Loop(_)
-                | Self::WriteLoop(_) => return None,
+                | Self::WriteLoop(_)
+                | Self::If(_) => return None,
                 Self::Inc(by) => {
                     let Some(inc) = minivm[idx].checked_add(i64::from(*by)) else {
                         return None;
@@ -251,12 +268,19 @@ impl ITree {
                 ITree::DecPtr(by) => stream.push(Executable::DecPtr(*by as u32)),
                 ITree::Read => stream.push(Executable::Read),
                 ITree::Write => stream.push(Executable::Write),
+                //  ITree::ZeroRange(by) => todo!(), // stream.push(Executable::ZeroRange(*by)),
                 ITree::Loop(itrees) => {
                     let s_idx = stream.len();
                     stream.push(Executable::LStart(0));
                     Self::synth_inner(&itrees, stream, cache);
-                    let e_idx = stream.len();
-                    stream.push(Executable::LEnd(s_idx as u32));
+
+                    let e_idx = if let Some(Executable::LEnd(_)) = stream.last() {
+                        stream.len() - 1
+                    } else {
+                        let e_idx = stream.len();
+                        stream.push(Executable::LEnd(s_idx as u32));
+                        e_idx
+                    };
 
                     stream[s_idx] = Executable::LStart(e_idx as u32);
                 }
@@ -268,6 +292,18 @@ impl ITree {
                     stream.push(Executable::WLEnd(s_idx as u32));
 
                     stream[s_idx] = Executable::WLStart(e_idx as u32);
+                }
+                ITree::If(itrees) => {
+                    let s_idx = stream.len();
+                    stream.push(Executable::LStart(0));
+                    Self::synth_inner(&itrees, stream, cache);
+                    let e_idx = stream.len() - 1;
+
+                    if e_idx == s_idx {
+                        stream.pop();
+                    } else {
+                        stream[s_idx] = Executable::LStart(e_idx as u32);
+                    }
                 }
             }
         }
@@ -291,6 +327,18 @@ pub fn rewrite_zero(tree: &mut [ITree]) {
                 *node = ITree::Zero;
             } else {
                 rewrite_zero(children);
+            }
+        }
+    }
+}
+
+pub fn find_if_conditions(tree: &mut [ITree]) {
+    for node in tree {
+        if let ITree::Loop(ref mut children) = node {
+            find_if_conditions(children);
+
+            if let Some(ITree::Zero) = children.last() {
+                *node = ITree::If(core::mem::take(children));
             }
         }
     }
@@ -334,6 +382,7 @@ pub enum Executable {
     Read,
     Write,
     Multiply(u32),
+    //    ZeroRange(u32),
 }
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
@@ -401,6 +450,9 @@ impl InterpreterStream {
         while idx < self.0.len() {
             match self.0[idx] {
                 Executable::Zero => state.zero(),
+                //         Executable::ZeroRange(by) => {
+                //           todo!()
+                //     }
                 Executable::Inc(by) => state.inc(BfOptimizable::truncate_from(by)),
                 Executable::Dec(by) => state.dec(BfOptimizable::truncate_from(by)),
                 Executable::IncPtr(by) => state

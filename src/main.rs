@@ -200,6 +200,7 @@ fn o_interpret<C: BfOptimizable>(
     let mut dag = ir::Token::to_tree(&tt).map_err(Either::Right)?;
 
     ir::rewrite_zero(&mut dag);
+    ir::find_if_conditions(&mut dag);
     ir::rewrite_multiply(&mut dag);
     ir::rewrite_write_loops(&mut dag);
 
