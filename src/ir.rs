@@ -180,9 +180,9 @@ impl ITree {
     }
 
     fn as_multiply(this: &[Self]) -> Option<(Range<isize>, Vec<MulArg>)> {
-        const Z_OFFSET: usize = 64;
+        const Z_OFFSET: usize = 32;
 
-        let mut minivm = [0i64; 128];
+        let mut minivm = [0i64; 64];
         let mut idx = Z_OFFSET;
 
         let mut bounds = 0..0isize;
