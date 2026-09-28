@@ -174,6 +174,10 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
         self.get() != C::ZERO
     }
 
+    /// # Safety
+    /// Bounds must hold the minimum and maximum index that will be visited by all operators:
+    /// - for operators (1isize, _), bounds must be at least 0..1
+    /// - for operators (-1isize, _), bounds must be at least -1..0
     #[inline(always)]
     pub unsafe fn mul(
         &mut self,
@@ -203,7 +207,7 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
         for (offset, diff) in operators {
             let idx = (self.ptr as isize).unchecked_add(offset) as usize;
 
-            self.cells.get_unchecked_mut(idx).add(by * diff);
+            self.cells.get_unchecked_mut(idx).add(by.wrapping_mul(diff));
         }
 
         Ok(())

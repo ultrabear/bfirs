@@ -103,8 +103,12 @@ struct InterpreterArgs {
     /// Interpreter choice, the standard interpreter allocates approximately 10 bytes per byte,
     /// while the minibit interpreter allocates 1 byte per byte at most, but runs slower
     /// minibit also does not implement instruction limited mode
-    #[arg(short, long, default_value = "standard")]
-    interpreter: InterpreterType,
+    /// O implements a heavy optimization pipeline
+    /// stupid runs the input directly as is, allowing for instantaneous startup times, but
+    /// significantly reduced performance
+    /// if not specified, O is selected on inputs <128MB, and minibit on inputs >=128MB
+    #[arg(short, long)]
+    interpreter: Option<InterpreterType>,
 }
 
 #[derive(Args)]
@@ -224,24 +228,16 @@ fn o_interpret<C: BfOptimizable>(
     stream.run(&mut state).map_err(Either::Left)
 }
 
-fn interpret<CellSize: BfOptimizable + Debug>(
+fn standard_interpret<CellSize: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
-    args: InterpreterArgs,
+    print: bool,
+    limit: Option<u64>,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
-    match args.interpreter {
-        InterpreterType::Standard => {}
-        InterpreterType::Minibit => {
-            return minibit_interpret::<CellSize>(code, arr_len, args.print);
-        }
-        InterpreterType::Stupid => return stupid_interpret::<CellSize>(code, arr_len, args.print),
-        InterpreterType::O => return o_interpret::<CellSize>(code, arr_len, args.print),
-    }
-
     let code = BfInstructionStream::optimized_from_text(code.iter().copied(), arr_len)
         .map_err(Either::Right)?;
 
-    if args.print {
+    if print {
         println!("{code:?}");
         return Ok(());
     }
@@ -249,7 +245,7 @@ fn interpret<CellSize: BfOptimizable + Debug>(
     let mut execenv =
         interpreter::new_stdio::<CellSize>(code.reccomended_array_size()).map_err(Either::Left)?;
 
-    match args.limit {
+    match limit {
         Some(lim) => {
             execenv.add_instruction_limit(lim).unwrap();
             execenv.run_limited(&code).map_err(Either::Left)?;
@@ -260,6 +256,32 @@ fn interpret<CellSize: BfOptimizable + Debug>(
     }
 
     Ok(())
+}
+
+fn interpret<CellSize: BfOptimizable>(
+    code: &[u8],
+    arr_len: Option<usize>,
+    args: InterpreterArgs,
+) -> Result<(), Either<BfExecError, BfCompError>> {
+    let selected = match args.interpreter {
+        Some(specific) => specific,
+        None => {
+            if code.len() > 1024 * 1024 * 128 {
+                InterpreterType::Minibit
+            } else {
+                InterpreterType::O
+            }
+        }
+    };
+
+    match selected {
+        InterpreterType::Standard => {
+            standard_interpret::<CellSize>(code, arr_len, args.print, args.limit)
+        }
+        InterpreterType::Minibit => minibit_interpret::<CellSize>(code, arr_len, args.print),
+        InterpreterType::Stupid => stupid_interpret::<CellSize>(code, arr_len, args.print),
+        InterpreterType::O => o_interpret::<CellSize>(code, arr_len, args.print),
+    }
 }
 
 #[derive(Debug, Clone)]

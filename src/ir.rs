@@ -586,3 +586,18 @@ fn valid_mul() {
         });
     });
 }
+
+#[test]
+fn mul_bounds_check() {
+    let mut tree = Token::to_tree(&Token::parse(b"[-<+>]")).unwrap();
+
+    standard_pipeline(&mut tree);
+
+    let runnable = ITree::synthesize(&tree);
+
+    let mut state = state::BfState::new(0, Box::new([0u8]), io::empty(), io::sink()).unwrap();
+
+    runnable
+        .run(&mut state)
+        .expect("OOB should not hit when branch is not taken");
+}
