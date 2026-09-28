@@ -132,7 +132,7 @@ pub struct MulArg {
     change: i64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub enum ITree {
     Zero,
     Mul(Range<isize>, Vec<MulArg>),
@@ -180,9 +180,9 @@ impl ITree {
     }
 
     fn as_multiply(this: &[Self]) -> Option<(Range<isize>, Vec<MulArg>)> {
-        const Z_OFFSET: usize = 32;
+        const Z_OFFSET: usize = 64;
 
-        let mut minivm = [0i64; 64];
+        let mut minivm = [0i64; Z_OFFSET * 2];
         let mut idx = Z_OFFSET;
 
         let mut bounds = 0..0isize;
@@ -258,7 +258,10 @@ impl ITree {
             match node {
                 ITree::Zero => stream.push(Executable::Zero),
                 ITree::Mul(range, mul_args) => {
-                    let i = cache.insert(DistinctMultiply(range.clone(), mul_args.clone()));
+                    let i = cache.insert(DistinctMultiply {
+                        bound: range.clone(),
+                        muls: mul_args.clone(),
+                    });
 
                     stream.push(Executable::Multiply(i));
                 }
@@ -368,7 +371,15 @@ pub fn rewrite_write_loops(tree: &mut [ITree]) {
     }
 }
 
-#[derive(Debug)]
+/// Applies standard optimization pipeline in order
+pub fn standard_pipeline(tree: &mut [ITree]) {
+    rewrite_zero(tree);
+    find_if_conditions(tree);
+    rewrite_multiply(tree);
+    rewrite_write_loops(tree);
+}
+
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub enum Executable {
     Zero,
     Inc(u32),
@@ -386,7 +397,10 @@ pub enum Executable {
 }
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
-pub struct DistinctMultiply(Range<isize>, Vec<MulArg>);
+pub struct DistinctMultiply {
+    bound: Range<isize>,
+    muls: Vec<MulArg>,
+}
 
 #[derive(Default)]
 pub struct MultiplyCache(Vec<DistinctMultiply>, HashMap<DistinctMultiply, u32>);
@@ -406,7 +420,7 @@ impl MultiplyCache {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct InterpreterStream(Vec<Executable>, Vec<DistinctMultiply>);
 
 impl InterpreterStream {
@@ -498,8 +512,10 @@ impl InterpreterStream {
                 Executable::Multiply(lut) => {
                     let dm = unsafe { self.1.get_unchecked(lut as usize) };
 
-                    unsafe { state.mul(&dm.0, dm.1.iter().map(|ma| (ma.offset, ma.change))) }
-                        .map_err(|source| BfExecError { source, idx })?;
+                    unsafe {
+                        state.mul(&dm.bound, dm.muls.iter().map(|ma| (ma.offset, ma.change)))
+                    }
+                    .map_err(|source| BfExecError { source, idx })?;
                 }
             }
 
@@ -508,4 +524,65 @@ impl InterpreterStream {
 
         Ok(())
     }
+}
+
+#[test]
+fn valid_mul() {
+    use rayon::iter::{IntoParallelIterator, ParallelIterator};
+
+    [false, true].into_par_iter().for_each(|inc| {
+        (u8::MIN..=u8::MAX).into_par_iter().for_each(|a| {
+            let mut state =
+                state::BfState::new(0, Box::new([0, 0]), io::empty(), io::sink()).unwrap();
+
+            let iter = vec![ITree::Loop(vec![
+                ITree::Dec(1),
+                ITree::IncPtr(1),
+                if inc {
+                    ITree::Inc(a as u32)
+                } else {
+                    ITree::Dec(a as u32)
+                },
+                ITree::DecPtr(1),
+            ])];
+
+            let mut dag = iter.clone();
+
+            rewrite_multiply(&mut dag);
+
+            if a != 0 {
+                assert_eq!(
+                    dag,
+                    vec![ITree::Mul(
+                        0..1,
+                        vec![MulArg {
+                            offset: 1,
+                            change: if inc { a as i64 } else { -(a as i64) },
+                        },],
+                    )]
+                );
+            } else {
+                assert_eq!(dag, vec![ITree::Mul(0..1, vec![])]);
+            }
+
+            let iter = ITree::synthesize(&iter);
+            let dag = ITree::synthesize(&dag);
+
+            for b in u8::MIN..=u8::MAX {
+                for c in u8::MIN..=u8::MAX {
+                    unsafe { state.set_ptr(0) };
+                    state.cells_mut()[0] = b;
+                    state.cells_mut()[1] = c;
+
+                    let mut state_iter = state.clone();
+                    iter.run(&mut state_iter).unwrap();
+
+                    let mut state_dag = state.clone();
+                    dag.run(&mut state_dag).unwrap();
+
+                    assert_eq!(state_dag.comparable(), state_iter.comparable());
+                }
+            }
+        });
+    });
 }

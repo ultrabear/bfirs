@@ -130,6 +130,7 @@ pub trait BfOptimizable:
     + Ord
     + std::ops::Rem<Self, Output = Self>
     + fmt::Display
+    + fmt::Debug
     + Default
 {
     const MAX: Self;

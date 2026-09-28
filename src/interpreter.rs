@@ -321,6 +321,8 @@ fn test_exec_env() {
                     e => panic!("Got {:?} value, expected {:?}", e, $rep),
                 },
             };
+
+            drop(env);
         };
     }
 
