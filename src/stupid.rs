@@ -8,6 +8,7 @@ use either::Either;
 
 use crate::{
     compiler::{BfCompError, BfOptimizable},
+    executor::{Executor, HasOutOfInstructions},
     interpreter::{BfExecError, BfExecErrorTy},
     state::BfState,
 };
@@ -82,62 +83,130 @@ fn lend_jump(
     }
 }
 
-pub fn interpret<C: BfOptimizable, I: io::Read, O: io::Write>(
-    input: &[u8],
-    state: &mut BfState<C, I, O>,
-) -> Result<(), Either<BfExecError, BfCompError>> {
-    let mut cache = HashMap::<usize, usize>::new();
-    let mut iter = Vec::<usize>::new();
+pub struct StupidExecutorState {
+    cache: HashMap<usize, usize>,
+    iter: Vec<usize>,
+    idx: usize,
+}
 
-    let mut idx = 0;
+impl HasOutOfInstructions<StupidExecutorState> for Either<BfExecError, BfCompError> {
+    fn out_of_instructions(ctx: &StupidExecutorState) -> Self {
+        Self::Left(BfExecError {
+            source: BfExecErrorTy::NotEnoughInstructions,
+            idx: ctx.idx,
+        })
+    }
+}
 
-    while idx < input.len() {
-        match input[idx] {
+pub struct BfCode<'a>(pub &'a [u8]);
+
+impl<'a, C, I, O> Executor<StupidExecutorState, C, I, O, Either<BfExecError, BfCompError>>
+    for BfCode<'a>
+where
+    C: BfOptimizable,
+    I: io::Read,
+    O: io::Write,
+{
+    #[inline(always)]
+    fn step(
+        &self,
+        exc_state: &mut StupidExecutorState,
+        state: &mut BfState<C, I, O>,
+    ) -> Result<(), Either<BfExecError, BfCompError>> {
+        match self.0[exc_state.idx] {
             b'+' => state.inc(1.into()),
             b'-' => state.dec(1.into()),
             b'>' => {
                 state
                     .inc_ptr(1)
-                    .map_err(|s| BfExecError { source: s, idx })
+                    .map_err(|s| BfExecError {
+                        source: s,
+                        idx: exc_state.idx,
+                    })
                     .map_err(Either::Left)?;
             }
             b'<' => {
                 state
                     .dec_ptr(1)
-                    .map_err(|s| BfExecError { source: s, idx })
+                    .map_err(|s| BfExecError {
+                        source: s,
+                        idx: exc_state.idx,
+                    })
                     .map_err(Either::Left)?;
             }
             b'[' => {
                 if state.jump_forward() {
-                    idx = lstart_jump(input, idx, &mut cache, &mut iter).map_err(Either::Right)?;
+                    exc_state.idx = lstart_jump(
+                        self.0,
+                        exc_state.idx,
+                        &mut exc_state.cache,
+                        &mut exc_state.iter,
+                    )
+                    .map_err(Either::Right)?;
                 }
             }
             b']' => {
                 if state.jump_backward() {
-                    idx = lend_jump(input, idx, &mut cache, &mut iter).map_err(Either::Right)?;
+                    exc_state.idx = lend_jump(
+                        self.0,
+                        exc_state.idx,
+                        &mut exc_state.cache,
+                        &mut exc_state.iter,
+                    )
+                    .map_err(Either::Right)?;
                 }
             }
             b',' => state
                 .read()
-                .map_err(|s| BfExecError { source: s, idx })
+                .map_err(|s| BfExecError {
+                    source: s,
+                    idx: exc_state.idx,
+                })
                 .map_err(Either::Left)?,
 
             b'.' => state
                 .write()
-                .map_err(|s| BfExecError { source: s, idx })
+                .map_err(|s| BfExecError {
+                    source: s,
+                    idx: exc_state.idx,
+                })
                 .map_err(Either::Left)?,
             _ => (),
         }
 
-        idx += 1;
+        exc_state.idx += 1;
+
+        Ok(())
     }
 
-    state
-        .write
-        .flush()
-        .map_err(BfExecErrorTy::from)
-        .map_err(|s| BfExecError { source: s, idx })
-        .map_err(Either::Left)?;
+    #[inline(always)]
+    fn running(&self, exc_state: &StupidExecutorState) -> bool {
+        exc_state.idx < self.0.len()
+    }
 
-    Ok(())
+    #[inline(always)]
+    fn initial() -> StupidExecutorState {
+        StupidExecutorState {
+            cache: HashMap::new(),
+            iter: Vec::new(),
+            idx: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn finish(
+        &self,
+        exc_state: &mut StupidExecutorState,
+        state: &mut BfState<C, I, O>,
+    ) -> Result<(), Either<BfExecError, BfCompError>> {
+        state
+            .write
+            .flush()
+            .map_err(BfExecErrorTy::from)
+            .map_err(|s| BfExecError {
+                source: s,
+                idx: exc_state.idx,
+            })
+            .map_err(Either::Left)
+    }
 }

@@ -55,28 +55,14 @@ impl<C, I, O> BfState<C, I, O> {
         &self.cells
     }
 
+    #[cfg(test)]
     pub fn cells_mut(&mut self) -> &mut [C] {
         &mut self.cells
     }
 
+    #[cfg(test)]
     pub fn comparable(&self) -> (usize, &[C]) {
         (self.ptr(), self.cells())
-    }
-
-    pub fn decompose(self) -> (usize, Box<[C]>) {
-        (self.ptr, self.cells)
-    }
-
-    pub fn cloned_state(&self) -> BfState<C, io::Empty, io::Sink>
-    where
-        C: Clone,
-    {
-        BfState {
-            ptr: self.ptr,
-            cells: self.cells.clone(),
-            read: io::empty(),
-            write: io::sink(),
-        }
     }
 }
 
@@ -109,7 +95,7 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
     pub fn write(&mut self) -> Result<(), BfExecErrorTy> {
         let cell = self.get().truncate_u8();
 
-        self.write.write(&[cell])?;
+        self.write.write_all(&[cell])?;
 
         Ok(())
     }

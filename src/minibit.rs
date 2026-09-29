@@ -7,6 +7,7 @@ use std::{collections::HashMap, io};
 
 use crate::{
     compiler::{BfCompError, BfOptimizable},
+    executor::{Executor, TrivialExecutorState},
     interpreter::BfExecError,
     state::BfState,
 };
@@ -283,86 +284,117 @@ impl BTapeStream {
     }
 }
 
-impl BTapeStream {
-    pub fn run<C: BfOptimizable, I: io::Read, O: io::Write>(
+impl<C, I, O> Executor<TrivialExecutorState, C, I, O, BfExecError> for BTapeStream
+where
+    C: BfOptimizable,
+    I: io::Read,
+    O: io::Write,
+{
+    #[inline(always)]
+    fn step(
         &self,
+        exc_state: &mut TrivialExecutorState,
         state: &mut BfState<C, I, O>,
     ) -> Result<(), BfExecError> {
-        let mut idx = 0;
-
-        while idx < self.0.len() {
-            match Instr::decode(self.0[idx]) {
-                (Instr::Zero, _) => state.zero(),
-                (Instr::Inc, by) => state.inc(C::from(by).wrapping_add(C::from(1))),
-                (Instr::Dec, by) => state.dec(C::from(by).wrapping_add(C::from(1))),
-                (Instr::IncPtr, by) => {
-                    state
-                        .inc_ptr(by as usize + 1)
-                        .map_err(|s| BfExecError { source: s, idx })?;
-                }
-                (Instr::DecPtr, by) => {
-                    state
-                        .dec_ptr(by as usize + 1)
-                        .map_err(|s| BfExecError { source: s, idx })?;
-                }
-                (Instr::LStart, off) => {
-                    if state.jump_forward() {
-                        idx = if off != 0 {
-                            idx + off as usize
-                        } else {
-                            self.1[&idx]
-                        };
-                    }
-                }
-                (Instr::LEnd, off) => {
-                    if state.jump_backward() {
-                        idx = if off != 0 {
-                            idx - off as usize
-                        } else {
-                            self.1[&idx]
-                        };
-                    }
-                }
-                // SAFETY: A valid BTapeStream has valid WildArgs
-                (Instr::Wild, kind) => match unsafe { WildArgs::from_wild(kind) } {
-                    WildArgs::Read => {
-                        state.read().map_err(|s| BfExecError { source: s, idx })?;
-                    }
-                    WildArgs::Write => {
-                        state.write().map_err(|s| BfExecError { source: s, idx })?;
-                    }
-                    WildArgs::IncPtrMany => {
-                        // SAFETY: Valid IncPtrMany has 8 LE bytes that encodes its operand
-                        let operand = unsafe {
-                            <[u8; 8]>::try_from(self.0.get_unchecked(idx + 1..idx + 9))
-                                .unwrap_unchecked()
-                        };
-
-                        state
-                            .inc_ptr(u64::from_le_bytes(operand) as usize)
-                            .map_err(|s| BfExecError { source: s, idx })?;
-
-                        idx += 8;
-                    }
-                    WildArgs::DecPtrMany => {
-                        // SAFETY: Valid DecPtrMany has 8 LE bytes that encodes its operand
-                        let operand = unsafe {
-                            <[u8; 8]>::try_from(self.0.get_unchecked(idx + 1..idx + 9))
-                                .unwrap_unchecked()
-                        };
-
-                        state
-                            .dec_ptr(u64::from_le_bytes(operand) as usize)
-                            .map_err(|s| BfExecError { source: s, idx })?;
-
-                        idx += 8;
-                    }
-                },
+        match Instr::decode(self.0[exc_state.idx]) {
+            (Instr::Zero, _) => state.zero(),
+            (Instr::Inc, by) => state.inc(C::from(by).wrapping_add(C::from(1))),
+            (Instr::Dec, by) => state.dec(C::from(by).wrapping_add(C::from(1))),
+            (Instr::IncPtr, by) => {
+                state.inc_ptr(by as usize + 1).map_err(|s| BfExecError {
+                    source: s,
+                    idx: exc_state.idx,
+                })?;
             }
+            (Instr::DecPtr, by) => {
+                state.dec_ptr(by as usize + 1).map_err(|s| BfExecError {
+                    source: s,
+                    idx: exc_state.idx,
+                })?;
+            }
+            (Instr::LStart, off) => {
+                if state.jump_forward() {
+                    exc_state.idx = if off != 0 {
+                        exc_state.idx + off as usize
+                    } else {
+                        self.1[&exc_state.idx]
+                    };
+                }
+            }
+            (Instr::LEnd, off) => {
+                if state.jump_backward() {
+                    exc_state.idx = if off != 0 {
+                        exc_state.idx - off as usize
+                    } else {
+                        self.1[&exc_state.idx]
+                    };
+                }
+            }
+            // SAFETY: A valid BTapeStream has valid WildArgs
+            (Instr::Wild, kind) => match unsafe { WildArgs::from_wild(kind) } {
+                WildArgs::Read => {
+                    state.read().map_err(|s| BfExecError {
+                        source: s,
+                        idx: exc_state.idx,
+                    })?;
+                }
+                WildArgs::Write => {
+                    state.write().map_err(|s| BfExecError {
+                        source: s,
+                        idx: exc_state.idx,
+                    })?;
+                }
+                WildArgs::IncPtrMany => {
+                    // SAFETY: Valid IncPtrMany has 8 LE bytes that encodes its operand
+                    let operand = unsafe {
+                        <[u8; 8]>::try_from(
+                            self.0.get_unchecked(exc_state.idx + 1..exc_state.idx + 9),
+                        )
+                        .unwrap_unchecked()
+                    };
 
-            idx += 1;
+                    state
+                        .inc_ptr(u64::from_le_bytes(operand) as usize)
+                        .map_err(|s| BfExecError {
+                            source: s,
+                            idx: exc_state.idx,
+                        })?;
+
+                    exc_state.idx += 8;
+                }
+                WildArgs::DecPtrMany => {
+                    // SAFETY: Valid DecPtrMany has 8 LE bytes that encodes its operand
+                    let operand = unsafe {
+                        <[u8; 8]>::try_from(
+                            self.0.get_unchecked(exc_state.idx + 1..exc_state.idx + 9),
+                        )
+                        .unwrap_unchecked()
+                    };
+
+                    state
+                        .dec_ptr(u64::from_le_bytes(operand) as usize)
+                        .map_err(|s| BfExecError {
+                            source: s,
+                            idx: exc_state.idx,
+                        })?;
+
+                    exc_state.idx += 8;
+                }
+            },
         }
 
+        exc_state.idx += 1;
+
         Ok(())
+    }
+
+    #[inline(always)]
+    fn running(&self, exc_state: &TrivialExecutorState) -> bool {
+        exc_state.idx < self.0.len()
+    }
+
+    #[inline(always)]
+    fn initial() -> TrivialExecutorState {
+        TrivialExecutorState { idx: 0 }
     }
 }

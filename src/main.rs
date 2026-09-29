@@ -15,6 +15,7 @@ use std::{
 use clap_complete::{generate, Shell};
 use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 
+mod executor;
 pub mod interpreter;
 mod ir;
 mod minibit;
@@ -23,11 +24,16 @@ mod state;
 mod stupid;
 
 use either::Either;
-use interpreter::{BfExecError, BfExecErrorTy, BrainFuckExecutor};
+use interpreter::{BfExecError, BfExecErrorTy};
 
 use clap::{Args, CommandFactory, Parser};
 
-use crate::{minibit::BTapeStream, nonblocking::nonblocking};
+use crate::{
+    executor::{Executor, TrivialExecutorState},
+    interpreter::StandardExecutor,
+    minibit::BTapeStream,
+    nonblocking::nonblocking,
+};
 
 #[derive(clap::ValueEnum, Clone, Copy)]
 enum Mode {
@@ -102,7 +108,6 @@ struct InterpreterArgs {
 
     /// Interpreter choice, the standard interpreter allocates approximately 10 bytes per byte,
     /// while the minibit interpreter allocates 1 byte per byte at most, but runs slower
-    /// minibit also does not implement instruction limited mode
     /// O implements a heavy optimization pipeline
     /// stupid runs the input directly as is, allowing for instantaneous startup times, but
     /// significantly reduced performance
@@ -128,6 +133,7 @@ fn minibit_interpret<C: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
     print: bool,
+    limit: Option<u64>,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     let (arr_len, stream) = std::thread::scope(|s| {
         let arr_len = s.spawn(move || {
@@ -159,15 +165,17 @@ fn minibit_interpret<C: BfOptimizable>(
         })
     })?;
 
-    stream.run(&mut bstate).map_err(Either::Left)?;
-
-    Ok(())
+    match limit {
+        Some(lim) => stream.run_limited(&mut bstate, lim).map_err(Either::Left),
+        None => stream.run(&mut bstate).map_err(Either::Left),
+    }
 }
 
 fn stupid_interpret<C: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
     print: bool,
+    limit: Option<u64>,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     if print {
         std::io::stdout().write_all(code).expect("Written");
@@ -189,13 +197,19 @@ fn stupid_interpret<C: BfOptimizable>(
         })
     })?;
 
-    stupid::interpret(code, &mut state)
+    let stream = stupid::BfCode(code);
+
+    match limit {
+        Some(lim) => stream.run_limited(&mut state, lim),
+        None => stream.run(&mut state),
+    }
 }
 
 fn o_interpret<C: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
     print: bool,
+    limit: Option<u64>,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     let arr_len = arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(code, b'>'), 30_000));
 
@@ -225,7 +239,10 @@ fn o_interpret<C: BfOptimizable>(
         })
     })?;
 
-    stream.run(&mut state).map_err(Either::Left)
+    match limit {
+        Some(lim) => stream.run_limited(&mut state, lim).map_err(Either::Left),
+        None => stream.run(&mut state).map_err(Either::Left),
+    }
 }
 
 fn standard_interpret<CellSize: BfOptimizable>(
@@ -242,20 +259,25 @@ fn standard_interpret<CellSize: BfOptimizable>(
         return Ok(());
     }
 
-    let mut execenv =
-        interpreter::new_stdio::<CellSize>(code.reccomended_array_size()).map_err(Either::Left)?;
+    let mut state = state::BfState::new(
+        0,
+        vec![CellSize::ZERO; code.reccomended_array_size()].into_boxed_slice(),
+        std::io::stdin().lock(),
+        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
+    )
+    .map_err(|_| {
+        Either::Left(BfExecError {
+            source: BfExecErrorTy::InitOverflow,
+            idx: 0,
+        })
+    })?;
+
+    let executor = StandardExecutor(&code);
 
     match limit {
-        Some(lim) => {
-            execenv.add_instruction_limit(lim).unwrap();
-            execenv.run_limited(&code).map_err(Either::Left)?;
-        }
-        None => {
-            execenv.run(&code).map_err(Either::Left)?;
-        }
+        Some(lim) => executor.run_limited(&mut state, lim).map_err(Either::Left),
+        None => executor.run(&mut state).map_err(Either::Left),
     }
-
-    Ok(())
 }
 
 fn interpret<CellSize: BfOptimizable>(
@@ -278,9 +300,13 @@ fn interpret<CellSize: BfOptimizable>(
         InterpreterType::Standard => {
             standard_interpret::<CellSize>(code, arr_len, args.print, args.limit)
         }
-        InterpreterType::Minibit => minibit_interpret::<CellSize>(code, arr_len, args.print),
-        InterpreterType::Stupid => stupid_interpret::<CellSize>(code, arr_len, args.print),
-        InterpreterType::O => o_interpret::<CellSize>(code, arr_len, args.print),
+        InterpreterType::Minibit => {
+            minibit_interpret::<CellSize>(code, arr_len, args.print, args.limit)
+        }
+        InterpreterType::Stupid => {
+            stupid_interpret::<CellSize>(code, arr_len, args.print, args.limit)
+        }
+        InterpreterType::O => o_interpret::<CellSize>(code, arr_len, args.print, args.limit),
     }
 }
 
@@ -298,46 +324,41 @@ fn render_c_deadline<CellSize: BfOptimizable>(
     secs: u32,
     fp: &mut dyn io::Write,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut execenv = BrainFuckExecutor {
-        state: state::BfState::new(
-            0,
-            vec![CellSize::ZERO; code.reccomended_array_size()].into_boxed_slice(),
-            ErrorReader,
-            vec![],
-        )
-        .map_err(|_| BfExecError {
-            source: BfExecErrorTy::InitOverflow,
-            idx: 0,
-        })?,
-        instruction_limit: 0,
-    };
+    let mut state = state::BfState::new(
+        0,
+        vec![CellSize::ZERO; code.reccomended_array_size()].into_boxed_slice(),
+        ErrorReader,
+        vec![],
+    )
+    .map_err(|_| BfExecError {
+        source: BfExecErrorTy::InitOverflow,
+        idx: 0,
+    })?;
 
-    let est =
-        u64::try_from(BrainFuckExecutor::<CellSize, ErrorReader, Vec<u8>>::estimate_instructions_per_second(
-        )).map_err(|_| "computer is too fast!! (u64::MAX overflowed when calculating instructions per second throughput)")? / 10;
+    let est = 50_000_000;
 
     let start = std::time::Instant::now();
     let deadline = start + Duration::from_secs(u64::from(secs));
 
-    execenv.add_instruction_limit(est)?;
+    let executable = StandardExecutor(&code);
 
-    let mut s_idx = 0;
+    let mut exc_state = TrivialExecutorState { idx: 0 };
 
     loop {
-        match execenv.run_limited_from(code, s_idx) {
+        match executable.run_limited_from(&mut exc_state, &mut state, est) {
             Ok(()) => {
                 code.render_interpreted_c(
                     &BfExecState {
-                        cursor: execenv.state.ptr(),
-                        data: execenv.state.cells(),
+                        cursor: state.ptr(),
+                        data: state.cells(),
                         instruction_pointer: None,
                     },
-                    &execenv.state.write,
+                    &state.write,
                     fp,
                 )?;
                 break;
             }
-            Err(BfExecError { source, idx }) => match source {
+            Err(BfExecError { source, .. }) => match source {
                 err @ (BfExecErrorTy::Overflow
                 | BfExecErrorTy::Underflow
                 | BfExecErrorTy::InitOverflow) => {
@@ -347,32 +368,28 @@ fn render_c_deadline<CellSize: BfOptimizable>(
                 BfExecErrorTy::IOError(_) => {
                     code.render_interpreted_c(
                         &BfExecState {
-                            cursor: execenv.state.ptr(),
-                            data: execenv.state.cells(),
-                            instruction_pointer: Some(idx),
+                            cursor: state.ptr(),
+                            data: state.cells(),
+                            instruction_pointer: Some(exc_state.idx),
                         },
-                        &execenv.state.write,
+                        &state.write,
                         fp,
                     )?;
                     break;
                 }
                 BfExecErrorTy::NotEnoughInstructions => {
-                    s_idx = idx;
-
                     if Instant::now() > deadline {
                         code.render_interpreted_c(
                             &BfExecState {
-                                cursor: execenv.state.ptr(),
-                                data: execenv.state.cells(),
-                                instruction_pointer: Some(idx),
+                                cursor: state.ptr(),
+                                data: state.cells(),
+                                instruction_pointer: Some(exc_state.idx),
                             },
-                            &execenv.state.write,
+                            &state.write,
                             fp,
                         )?;
                         break;
                     }
-
-                    execenv.add_instruction_limit(est)?;
                 }
             },
         }

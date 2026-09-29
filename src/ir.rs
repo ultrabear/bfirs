@@ -4,6 +4,7 @@ use std::{collections::HashMap, io, ops::Range};
 
 use crate::{
     compiler::{BfCompError, BfOptimizable},
+    executor::{Executor, HasOutOfInstructions},
     interpreter::{BfExecError, BfExecErrorTy},
     state,
 };
@@ -423,104 +424,160 @@ impl MultiplyCache {
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
 pub struct InterpreterStream(Vec<Executable>, Vec<DistinctMultiply>);
 
-impl InterpreterStream {
-    fn write<C: BfOptimizable, I: io::Read, O: io::Write, const BUF: usize>(
-        buf: &mut [u8; BUF],
-        cursor: &mut usize,
+pub struct OExecutorState {
+    idx: usize,
+    buf: [u8; 32],
+    cursor: usize,
+    wloop: bool,
+}
+
+impl HasOutOfInstructions<OExecutorState> for BfExecError {
+    fn out_of_instructions(ctx: &OExecutorState) -> Self {
+        BfExecError {
+            source: BfExecErrorTy::NotEnoughInstructions,
+            idx: ctx.idx,
+        }
+    }
+}
+
+impl OExecutorState {
+    fn softwrite<C: BfOptimizable, I: io::Read, O: io::Write>(
+        &mut self,
         state: &mut state::BfState<C, I, O>,
     ) -> Result<(), BfExecErrorTy> {
-        if *cursor == buf.len() {
-            state.write.write_all(buf)?;
-            *cursor = 0;
+        if self.cursor == self.buf.len() {
+            state.write.write_all(&self.buf)?;
+            self.cursor = 0;
         }
 
-        buf[*cursor] = state.get().truncate_u8();
-        *cursor += 1;
+        self.buf[self.cursor] = state.get().truncate_u8();
+        self.cursor += 1;
 
         Ok(())
     }
 
-    fn softflush<C: BfOptimizable, I: io::Read, O: io::Write, const BUF: usize>(
-        buf: &mut [u8; BUF],
-        cursor: &mut usize,
+    fn softflush<C: BfOptimizable, I: io::Read, O: io::Write>(
+        &mut self,
         state: &mut state::BfState<C, I, O>,
     ) -> Result<(), BfExecErrorTy> {
-        state.write.write_all(&buf[..*cursor])?;
-        *cursor = 0;
+        state.write.write_all(&self.buf[..self.cursor])?;
+        self.cursor = 0;
 
         Ok(())
     }
+}
 
-    pub fn run<C: BfOptimizable, I: io::Read, O: io::Write>(
+impl<C, I, O> Executor<OExecutorState, C, I, O, BfExecError> for InterpreterStream
+where
+    C: BfOptimizable,
+    I: io::Read,
+    O: io::Write,
+{
+    #[inline(always)]
+    fn initial() -> OExecutorState {
+        OExecutorState {
+            idx: 0,
+            buf: [0; 32],
+            cursor: 0,
+            wloop: false,
+        }
+    }
+
+    #[inline(always)]
+    fn running(&self, exc_state: &OExecutorState) -> bool {
+        exc_state.idx < self.0.len()
+    }
+
+    fn finish(
         &self,
+        exc_state: &mut OExecutorState,
         state: &mut state::BfState<C, I, O>,
     ) -> Result<(), BfExecError> {
-        let mut idx = 0;
+        if exc_state.wloop {
+            exc_state.softflush(state).map_err(|source| BfExecError {
+                source,
+                idx: exc_state.idx,
+            })
+        } else {
+            Ok(())
+        }
+    }
 
-        let mut wbuf = [0; 32];
-        let mut cursor = 0;
-        let mut wloop = false;
-
-        while idx < self.0.len() {
-            match self.0[idx] {
-                Executable::Zero => state.zero(),
-                //         Executable::ZeroRange(by) => {
-                //           todo!()
-                //     }
-                Executable::Inc(by) => state.inc(BfOptimizable::truncate_from(by)),
-                Executable::Dec(by) => state.dec(BfOptimizable::truncate_from(by)),
-                Executable::IncPtr(by) => state
-                    .inc_ptr(by as usize)
-                    .map_err(|source| BfExecError { source, idx })?,
-                Executable::DecPtr(by) => state
-                    .dec_ptr(by as usize)
-                    .map_err(|source| BfExecError { source, idx })?,
-                Executable::WLStart(to) => {
-                    if state.jump_forward() {
-                        idx = to as usize;
-                    } else {
-                        wloop = true;
-                    }
-                }
-                Executable::WLEnd(to) => {
-                    if state.jump_backward() {
-                        idx = to as usize;
-                    } else {
-                        wloop = false;
-                        Self::softflush(&mut wbuf, &mut cursor, state)
-                            .map_err(|source| BfExecError { source, idx })?;
-                    }
-                }
-
-                Executable::LStart(to) => {
-                    if state.jump_forward() {
-                        idx = to as usize;
-                    }
-                }
-                Executable::LEnd(to) => {
-                    if state.jump_backward() {
-                        idx = to as usize;
-                    }
-                }
-                Executable::Read => state.read().map_err(|source| BfExecError { source, idx })?,
-                Executable::Write => if wloop {
-                    Self::write(&mut wbuf, &mut cursor, state)
+    #[inline(always)]
+    fn step(
+        &self,
+        exc_state: &mut OExecutorState,
+        state: &mut state::BfState<C, I, O>,
+    ) -> Result<(), BfExecError> {
+        match self.0[exc_state.idx] {
+            Executable::Zero => state.zero(),
+            //         Executable::ZeroRange(by) => {
+            //           todo!()
+            //     }
+            Executable::Inc(by) => state.inc(BfOptimizable::truncate_from(by)),
+            Executable::Dec(by) => state.dec(BfOptimizable::truncate_from(by)),
+            Executable::IncPtr(by) => state.inc_ptr(by as usize).map_err(|source| BfExecError {
+                source,
+                idx: exc_state.idx,
+            })?,
+            Executable::DecPtr(by) => state.dec_ptr(by as usize).map_err(|source| BfExecError {
+                source,
+                idx: exc_state.idx,
+            })?,
+            Executable::WLStart(to) => {
+                if state.jump_forward() {
+                    exc_state.idx = to as usize;
                 } else {
-                    state.write()
+                    exc_state.wloop = true;
                 }
-                .map_err(|source| BfExecError { source, idx })?,
-                Executable::Multiply(lut) => {
-                    let dm = unsafe { self.1.get_unchecked(lut as usize) };
-
-                    unsafe {
-                        state.mul(&dm.bound, dm.muls.iter().map(|ma| (ma.offset, ma.change)))
-                    }
-                    .map_err(|source| BfExecError { source, idx })?;
+            }
+            Executable::WLEnd(to) => {
+                if state.jump_backward() {
+                    exc_state.idx = to as usize;
+                } else {
+                    exc_state.wloop = false;
+                    exc_state.softflush(state).map_err(|source| BfExecError {
+                        source,
+                        idx: exc_state.idx,
+                    })?;
                 }
             }
 
-            idx += 1;
+            Executable::LStart(to) => {
+                if state.jump_forward() {
+                    exc_state.idx = to as usize;
+                }
+            }
+            Executable::LEnd(to) => {
+                if state.jump_backward() {
+                    exc_state.idx = to as usize;
+                }
+            }
+            Executable::Read => state.read().map_err(|source| BfExecError {
+                source,
+                idx: exc_state.idx,
+            })?,
+            Executable::Write => if exc_state.wloop {
+                exc_state.softwrite(state)
+            } else {
+                state.write()
+            }
+            .map_err(|source| BfExecError {
+                source,
+                idx: exc_state.idx,
+            })?,
+            Executable::Multiply(lut) => {
+                let dm = unsafe { self.1.get_unchecked(lut as usize) };
+
+                unsafe { state.mul(&dm.bound, dm.muls.iter().map(|ma| (ma.offset, ma.change))) }
+                    .map_err(|source| BfExecError {
+                        source,
+                        idx: exc_state.idx,
+                    })?;
+            }
         }
+
+        exc_state.idx += 1;
 
         Ok(())
     }

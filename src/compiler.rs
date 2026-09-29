@@ -367,28 +367,22 @@ impl<T: BfOptimizable> BfInstructionStream<T> {
     ) -> Result<Self, BfCompError> {
         let mut new = Self(Self::bf_to_stream(v), 0);
 
+        // run optimization passes
+        new.group_common_bf();
+        new.static_optimize();
+        new.insert_bf_jump_points()?;
+
         let array_len: usize = array_len.unwrap_or_else(|| {
             new.iter()
-                .fold(0, |accu, x| {
-                    if let BfInstruc::IncPtr = x {
-                        accu + 1
-                    } else {
-                        accu
-                    }
+                .fold(0, |accu, x| match x {
+                    BfInstruc::IncPtr => accu + 1,
+                    BfInstruc::IncPtrBy(n) => accu + n.get() as usize,
+                    _ => accu,
                 })
                 .max(30_000)
         });
 
         new.1 = array_len;
-
-        if new.len() > (isize::MAX as usize) {
-            return Err(BfCompError::Overflow);
-        }
-
-        // run optimization passes
-        new.group_common_bf();
-        new.static_optimize();
-        new.insert_bf_jump_points()?;
 
         Ok(new)
     }
