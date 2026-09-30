@@ -191,9 +191,11 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
         self.zero();
 
         for (offset, diff) in operators {
-            let idx = (self.ptr as isize).unchecked_add(offset) as usize;
+            // SAFETY: we checked bounds and caller promises offsets are within bounds
+            let idx = unsafe { (self.ptr as isize).unchecked_add(offset) as usize };
 
-            self.cells.get_unchecked_mut(idx).add(by.wrapping_mul(diff));
+            // SAFETY: we checked bounds and caller promises offsets are within bounds
+            unsafe { self.cells.get_unchecked_mut(idx).add(by.wrapping_mul(diff)) };
         }
 
         Ok(())

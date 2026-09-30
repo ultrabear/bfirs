@@ -49,23 +49,25 @@ pub fn nonblocking<W: io::Write + Send + 'static>(
 
     let shared_clone = shared.clone();
 
-    let handle = std::thread::spawn(move || loop {
-        let arg = arg_recv.recv_timeout(interval);
+    let handle = std::thread::spawn(move || {
+        loop {
+            let arg = arg_recv.recv_timeout(interval);
 
-        cache = core::mem::replace(&mut shared_clone.lock().unwrap(), cache);
+            cache = core::mem::replace(&mut shared_clone.lock().unwrap(), cache);
 
-        _ = writer.write_all(&cache);
-        let res = writer.flush();
+            _ = writer.write_all(&cache);
+            let res = writer.flush();
 
-        cache.clear();
+            cache.clear();
 
-        match arg {
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                break;
-            }
-            Ok(Argument::Flush) => {
-                _ = ret_send.send(res);
+            match arg {
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    break;
+                }
+                Ok(Argument::Flush) => {
+                    _ = ret_send.send(res);
+                }
             }
         }
     });

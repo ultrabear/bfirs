@@ -61,7 +61,8 @@ enum WildArgs {
 impl WildArgs {
     /// Converts a wild operand to the associated wild instruction
     unsafe fn from_wild(v: u8) -> Self {
-        core::mem::transmute(v)
+        // SAFETY: caller only passes in valid wild operands
+        unsafe { core::mem::transmute(v) }
     }
 }
 
@@ -151,9 +152,7 @@ impl BTapeStream {
             .filter(|v| matches!(v, b'+' | b'-' | b'>' | b'<' | b'[' | b']' | b',' | b'.'));
 
         macro_rules! push {
-            ($byte:expr) => {{
-                out.push($byte)
-            }};
+            ($byte:expr) => {{ out.push($byte) }};
         }
 
         while let Some(next) = pull.next() {

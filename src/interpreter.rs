@@ -17,7 +17,6 @@ pub struct BfExecError {
 }
 
 impl HasOutOfInstructions<TrivialExecutorState> for BfExecError {
-
     #[inline(always)]
     fn out_of_instructions(ctx: &TrivialExecutorState) -> Self {
         Self {

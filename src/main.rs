@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 
 mod interval;
@@ -35,7 +35,7 @@ use crate::{
     executor::{Executor, HasOutOfInstructions, TrivialExecutorState},
     interpreter::StandardExecutor,
     minibit::BTapeStream,
-    nonblocking::{nonblocking, NonBlocking},
+    nonblocking::{NonBlocking, nonblocking},
 };
 
 #[derive(clap::ValueEnum, Clone, Copy)]

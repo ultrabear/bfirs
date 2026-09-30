@@ -347,7 +347,7 @@ pub fn rewrite_zero(tree: &mut [ITree]) {
 
 pub fn find_if_conditions(tree: &mut [ITree]) {
     for node in tree {
-        if let ITree::Loop(ref mut children) = node {
+        if let ITree::Loop(children) = node {
             find_if_conditions(children);
 
             if let Some(ITree::Zero) = children.last() {
