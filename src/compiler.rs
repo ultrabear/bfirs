@@ -1,4 +1,5 @@
 use core::fmt;
+use std::fmt::Debug;
 use std::io;
 use std::num::NonZeroU32;
 use thiserror::Error;
@@ -120,6 +121,15 @@ pub enum BfCompError {
     Overflow,
 }
 
+pub trait PrintBf {
+    fn output(&self, out: &mut impl io::Write) -> io::Result<()>;
+}
+
+impl<T: fmt::Debug> PrintBf for T {
+    fn output(&self, out: &mut impl io::Write) -> io::Result<()> {
+        write!(out, "{self:?}")
+    }
+}
 pub trait BfOptimizable:
     Copy
     + Clone

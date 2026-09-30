@@ -1,6 +1,8 @@
 //! Generic execution support
 
-use crate::state::BfState;
+use std::time::Duration;
+
+use crate::{interval::Interval, state::BfState};
 
 /// Trait marking that an error type has a constructable out of instructions variant
 pub trait HasOutOfInstructions<Ctx> {
@@ -47,10 +49,7 @@ pub trait Executor<State, C, I, O, E> {
     {
         let mut exc_state = Self::initial();
 
-        match self.run_limited_from(&mut exc_state, state, max_steps) {
-            Ok(()) => self.finish(&mut exc_state, state),
-            Err(e) => Err(e),
-        }
+        self.run_limited_from(&mut exc_state, state, max_steps)
     }
 
     fn run_limited_from(
@@ -62,12 +61,25 @@ pub trait Executor<State, C, I, O, E> {
     where
         E: HasOutOfInstructions<State>,
     {
+        match self.run_limited_from_signalled(exc_state, state, max_steps) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(())) => Err(E::out_of_instructions(exc_state)),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn run_limited_from_signalled(
+        &self,
+        exc_state: &mut State,
+        state: &mut BfState<C, I, O>,
+        max_steps: u64,
+    ) -> Result<Result<(), ()>, E> {
         let mut step = max_steps;
 
         while self.running(exc_state) {
             if step == 0 {
                 self.finish(exc_state, state)?;
-                return Err(E::out_of_instructions(&exc_state));
+                return Ok(Err(()));
             }
 
             step = step.wrapping_sub(1);
@@ -77,6 +89,38 @@ pub trait Executor<State, C, I, O, E> {
             }
         }
 
-        Ok(())
+        self.finish(exc_state, state)?;
+
+        Ok(Ok(()))
+    }
+    fn run_slow(
+        &self,
+        state: &mut BfState<C, I, O>,
+        mut max_steps: u64,
+        steps_per_ms: u64,
+    ) -> Result<(), E>
+    where
+        E: HasOutOfInstructions<State>,
+    {
+        let mut exc_state = Self::initial();
+
+        let mut interval = Interval::new(Duration::from_millis(1));
+
+        loop {
+            interval.tick();
+
+            let steps_take = core::cmp::min(steps_per_ms, max_steps);
+
+            match self.run_limited_from_signalled(&mut exc_state, state, steps_take)? {
+                Ok(()) => return Ok(()),
+                Err(()) => {
+                    max_steps = max_steps.saturating_sub(steps_take);
+
+                    if max_steps == 0 {
+                        return Err(E::out_of_instructions(&exc_state));
+                    }
+                }
+            }
+        }
     }
 }

@@ -15,6 +15,8 @@ use std::{
 use clap_complete::{generate, Shell};
 use compiler::{BfCompError, BfExecState, BfInstructionStream, BfOptimizable};
 
+mod interval;
+
 mod executor;
 pub mod interpreter;
 mod ir;
@@ -29,10 +31,11 @@ use interpreter::{BfExecError, BfExecErrorTy};
 use clap::{Args, CommandFactory, Parser};
 
 use crate::{
-    executor::{Executor, TrivialExecutorState},
+    compiler::PrintBf,
+    executor::{Executor, HasOutOfInstructions, TrivialExecutorState},
     interpreter::StandardExecutor,
     minibit::BTapeStream,
-    nonblocking::nonblocking,
+    nonblocking::{nonblocking, NonBlocking},
 };
 
 #[derive(clap::ValueEnum, Clone, Copy)]
@@ -106,6 +109,10 @@ struct InterpreterArgs {
     #[arg(short, long)]
     print: bool,
 
+    /// kiloinstructions to run per second, applies millisecond resolution time division
+    #[arg(long)]
+    kips: Option<u64>,
+
     /// Interpreter choice, the standard interpreter allocates approximately 10 bytes per byte,
     /// while the minibit interpreter allocates 1 byte per byte at most, but runs slower
     /// O implements a heavy optimization pipeline
@@ -128,12 +135,52 @@ struct CompilerArgs {
     opt_level: Option<u32>,
 }
 
+fn interpret_generic<State, C: BfOptimizable, E, Exc>(
+    executable: &Exc,
+    array_size: usize,
+    args: &InterpreterArgs,
+) -> Option<Result<(), E>>
+where
+    C: BfOptimizable,
+    E: HasOutOfInstructions<State>,
+    Exc: Executor<State, C, io::StdinLock<'static>, NonBlocking, E>,
+    Exc: PrintBf,
+{
+    if args.print {
+        executable
+            .output(&mut io::stdout())
+            .expect("can write to stdout");
+        println!();
+        return Some(Ok(()));
+    }
+
+    let mut state = state::BfState::new(
+        0,
+        vec![C::ZERO; array_size].into_boxed_slice(),
+        std::io::stdin().lock(),
+        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
+    )
+    .ok()?;
+
+    let state = &mut state;
+
+    Some(match args.limit {
+        Some(lim) => match args.kips {
+            Some(kips) => executable.run_slow(state, lim, kips),
+            None => executable.run_limited(state, lim),
+        },
+        None => match args.kips {
+            None => executable.run(state),
+            Some(kips) => executable.run_slow(state, u64::MAX, kips),
+        },
+    })
+}
+
 /// Interprets in MiniBit runtime, a low memory overhead bf executor
 fn minibit_interpret<C: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
-    print: bool,
-    limit: Option<u64>,
+    args: &InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     let (arr_len, stream) = std::thread::scope(|s| {
         let arr_len = s.spawn(move || {
@@ -147,69 +194,35 @@ fn minibit_interpret<C: BfOptimizable>(
     })
     .map_err(Either::Right)?;
 
-    if print {
-        println!("{stream:?}");
-        return Ok(());
-    }
-
-    let mut bstate = state::BfState::new(
-        0,
-        vec![C::ZERO; arr_len].into_boxed_slice(),
-        std::io::stdin().lock(),
-        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
-    )
-    .map_err(|_| {
-        Either::Left(BfExecError {
+    interpret_generic::<_, C, _, _>(&stream, arr_len, args)
+        .unwrap_or(Err(BfExecError {
             source: BfExecErrorTy::InitOverflow,
             idx: 0,
-        })
-    })?;
-
-    match limit {
-        Some(lim) => stream.run_limited(&mut bstate, lim).map_err(Either::Left),
-        None => stream.run(&mut bstate).map_err(Either::Left),
-    }
+        }))
+        .map_err(Either::Left)
 }
 
 fn stupid_interpret<C: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
-    print: bool,
-    limit: Option<u64>,
+    args: &InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
-    if print {
-        std::io::stdout().write_all(code).expect("Written");
-        return Ok(());
-    }
-
     let arr_len = arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(code, b'>'), 30_000));
-
-    let mut state = state::BfState::new(
-        0,
-        vec![C::ZERO; arr_len].into_boxed_slice(),
-        std::io::stdin().lock(),
-        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
-    )
-    .map_err(|_| {
-        Either::Left(BfExecError {
-            source: BfExecErrorTy::InitOverflow,
-            idx: 0,
-        })
-    })?;
 
     let stream = stupid::BfCode(code);
 
-    match limit {
-        Some(lim) => stream.run_limited(&mut state, lim),
-        None => stream.run(&mut state),
-    }
+    interpret_generic::<_, C, _, _>(&stream, arr_len, args).unwrap_or(Err(Either::Left(
+        BfExecError {
+            source: BfExecErrorTy::InitOverflow,
+            idx: 0,
+        },
+    )))
 }
 
 fn o_interpret<C: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
-    print: bool,
-    limit: Option<u64>,
+    args: &InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     let arr_len = arr_len.unwrap_or_else(|| std::cmp::max(bytecount::count(code, b'>'), 30_000));
 
@@ -221,63 +234,30 @@ fn o_interpret<C: BfOptimizable>(
 
     let stream = ir::ITree::synthesize(&dag);
 
-    if print {
-        println!("{stream:?}");
-        return Ok(());
-    }
-
-    let mut state = state::BfState::new(
-        0,
-        vec![C::ZERO; arr_len].into_boxed_slice(),
-        std::io::stdin().lock(),
-        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
-    )
-    .map_err(|_| {
-        Either::Left(BfExecError {
+    interpret_generic::<_, C, _, _>(&stream, arr_len, args)
+        .unwrap_or(Err(BfExecError {
             source: BfExecErrorTy::InitOverflow,
             idx: 0,
-        })
-    })?;
-
-    match limit {
-        Some(lim) => stream.run_limited(&mut state, lim).map_err(Either::Left),
-        None => stream.run(&mut state).map_err(Either::Left),
-    }
+        }))
+        .map_err(Either::Left)
 }
 
 fn standard_interpret<CellSize: BfOptimizable>(
     code: &[u8],
     arr_len: Option<usize>,
-    print: bool,
-    limit: Option<u64>,
+    args: &InterpreterArgs,
 ) -> Result<(), Either<BfExecError, BfCompError>> {
     let code = BfInstructionStream::optimized_from_text(code.iter().copied(), arr_len)
         .map_err(Either::Right)?;
 
-    if print {
-        println!("{code:?}");
-        return Ok(());
-    }
-
-    let mut state = state::BfState::new(
-        0,
-        vec![CellSize::ZERO; code.reccomended_array_size()].into_boxed_slice(),
-        std::io::stdin().lock(),
-        nonblocking(std::io::stdout(), Duration::from_millis(10)).0,
-    )
-    .map_err(|_| {
-        Either::Left(BfExecError {
-            source: BfExecErrorTy::InitOverflow,
-            idx: 0,
-        })
-    })?;
-
     let executor = StandardExecutor(&code);
 
-    match limit {
-        Some(lim) => executor.run_limited(&mut state, lim).map_err(Either::Left),
-        None => executor.run(&mut state).map_err(Either::Left),
-    }
+    interpret_generic::<_, CellSize, _, _>(&executor, code.reccomended_array_size(), args)
+        .unwrap_or(Err(BfExecError {
+            source: BfExecErrorTy::InitOverflow,
+            idx: 0,
+        }))
+        .map_err(Either::Left)
 }
 
 fn interpret<CellSize: BfOptimizable>(
@@ -297,16 +277,10 @@ fn interpret<CellSize: BfOptimizable>(
     };
 
     match selected {
-        InterpreterType::Standard => {
-            standard_interpret::<CellSize>(code, arr_len, args.print, args.limit)
-        }
-        InterpreterType::Minibit => {
-            minibit_interpret::<CellSize>(code, arr_len, args.print, args.limit)
-        }
-        InterpreterType::Stupid => {
-            stupid_interpret::<CellSize>(code, arr_len, args.print, args.limit)
-        }
-        InterpreterType::O => o_interpret::<CellSize>(code, arr_len, args.print, args.limit),
+        InterpreterType::Standard => standard_interpret::<CellSize>(code, arr_len, &args),
+        InterpreterType::Minibit => minibit_interpret::<CellSize>(code, arr_len, &args),
+        InterpreterType::Stupid => stupid_interpret::<CellSize>(code, arr_len, &args),
+        InterpreterType::O => o_interpret::<CellSize>(code, arr_len, &args),
     }
 }
 

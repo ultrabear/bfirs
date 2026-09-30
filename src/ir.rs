@@ -150,8 +150,19 @@ pub enum ITree {
 }
 
 impl ITree {
-    fn terminates(&self) -> bool {
-        !matches!(self, Self::Loop(_) | Self::WriteLoop(_))
+    fn terminates_no_read(&self) -> bool {
+        match self {
+            Self::Loop(_) | Self::WriteLoop(_) => false,
+            Self::If(c) => c.iter().all(|n| n.terminates_no_read()),
+            Self::Read => false,
+            ITree::Zero
+            | ITree::Mul(_, _)
+            | ITree::Inc(_)
+            | ITree::Dec(_)
+            | ITree::IncPtr(_)
+            | ITree::DecPtr(_)
+            | ITree::Write => true,
+        }
     }
 
     fn zero_in_loop(this: &[Self]) -> bool {
@@ -174,9 +185,7 @@ impl ITree {
 
     fn is_writeloop(this: &[Self]) -> bool {
         Self::terminating_nested_len(this) < 32
-            && this
-                .iter()
-                .all(|c| c.terminates() & !matches!(c, Self::Read))
+            && this.iter().all(|c| c.terminates_no_read())
             && this.iter().any(|c| matches!(c, Self::Write))
     }
 

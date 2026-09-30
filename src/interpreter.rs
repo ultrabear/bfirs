@@ -56,6 +56,7 @@ impl fmt::Display for Overflow {
     }
 }
 
+#[derive(Debug)]
 pub struct StandardExecutor<'a, C>(pub &'a [BfInstruc<C>]);
 
 impl<C, I, O> Executor<TrivialExecutorState, C, I, O, BfExecError> for StandardExecutor<'_, C>

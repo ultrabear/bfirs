@@ -7,7 +7,7 @@ use std::{collections::HashMap, io};
 use either::Either;
 
 use crate::{
-    compiler::{BfCompError, BfOptimizable},
+    compiler::{BfCompError, BfOptimizable, PrintBf},
     executor::{Executor, HasOutOfInstructions},
     interpreter::{BfExecError, BfExecErrorTy},
     state::BfState,
@@ -99,6 +99,12 @@ impl HasOutOfInstructions<StupidExecutorState> for Either<BfExecError, BfCompErr
 }
 
 pub struct BfCode<'a>(pub &'a [u8]);
+
+impl PrintBf for BfCode<'_> {
+    fn output(&self, out: &mut impl io::Write) -> io::Result<()> {
+        out.write_all(self.0)
+    }
+}
 
 impl<'a, C, I, O> Executor<StupidExecutorState, C, I, O, Either<BfExecError, BfCompError>>
     for BfCode<'a>
