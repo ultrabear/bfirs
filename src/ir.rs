@@ -1,6 +1,6 @@
 //! An intermediate DAG representation for a BF programs optimization stage
 
-use std::{collections::HashMap, io, ops::Range};
+use std::{collections::HashMap, hash::Hash, io, ops::Range};
 
 use crate::{
     compiler::{BfCompError, BfOptimizable},
@@ -165,10 +165,6 @@ impl ITree {
         }
     }
 
-    fn zero_in_loop(this: &[Self]) -> bool {
-        matches!(this, [Self::Inc(1)] | [Self::Dec(1)])
-    }
-
     fn terminating_nested_len(this: &[Self]) -> usize {
         this.len()
             + this
@@ -263,17 +259,27 @@ impl ITree {
         }
     }
 
-    fn synth_inner(this: &[Self], stream: &mut Vec<Executable>, cache: &mut MultiplyCache) {
+    fn synth_inner(
+        this: &[Self],
+        stream: &mut Vec<Executable>,
+        cache: &mut CacheBuilder<DistinctMultiply>,
+        sim_cache: &mut CacheBuilder<MulArg>,
+    ) {
         for node in this {
             match node {
                 ITree::Zero => stream.push(Executable::Zero),
                 ITree::Mul(range, mul_args) => {
-                    let i = cache.insert(DistinctMultiply {
-                        bound: range.clone(),
-                        muls: mul_args.clone(),
-                    });
+                    if mul_args.len() == 1 {
+                        let i = sim_cache.insert(mul_args[0].clone());
+                        stream.push(Executable::SingleMultiply(i));
+                    } else {
+                        let i = cache.insert(DistinctMultiply {
+                            bound: range.clone(),
+                            muls: mul_args.clone(),
+                        });
 
-                    stream.push(Executable::Multiply(i));
+                        stream.push(Executable::Multiply(i));
+                    }
                 }
                 ITree::Inc(by) => stream.push(Executable::Inc(*by)),
                 ITree::Dec(by) => stream.push(Executable::Dec(*by)),
@@ -285,7 +291,7 @@ impl ITree {
                 ITree::Loop(itrees) => {
                     let s_idx = stream.len();
                     stream.push(Executable::LStart(0));
-                    Self::synth_inner(&itrees, stream, cache);
+                    Self::synth_inner(&itrees, stream, cache, sim_cache);
 
                     let e_idx = if let Some(Executable::LEnd(_)) = stream.last() {
                         stream.len() - 1
@@ -300,7 +306,7 @@ impl ITree {
                 ITree::WriteLoop(itrees) => {
                     let s_idx = stream.len();
                     stream.push(Executable::WLStart(0));
-                    Self::synth_inner(&itrees, stream, cache);
+                    Self::synth_inner(&itrees, stream, cache, sim_cache);
                     let e_idx = stream.len();
                     stream.push(Executable::WLEnd(s_idx as u32));
 
@@ -309,7 +315,7 @@ impl ITree {
                 ITree::If(itrees) => {
                     let s_idx = stream.len();
                     stream.push(Executable::LStart(0));
-                    Self::synth_inner(&itrees, stream, cache);
+                    Self::synth_inner(&itrees, stream, cache, sim_cache);
                     let e_idx = stream.len() - 1;
 
                     if e_idx == s_idx {
@@ -323,25 +329,14 @@ impl ITree {
     }
 
     pub fn synthesize(this: &[Self]) -> InterpreterStream {
-        let mut cache = MultiplyCache::default();
+        let mut cache = CacheBuilder::default();
+        let mut sim_cache = CacheBuilder::default();
 
         let mut stream = vec![];
 
-        Self::synth_inner(this, &mut stream, &mut cache);
+        Self::synth_inner(this, &mut stream, &mut cache, &mut sim_cache);
 
-        InterpreterStream(stream, cache.0)
-    }
-}
-
-pub fn rewrite_zero(tree: &mut [ITree]) {
-    for node in tree {
-        if let ITree::Loop(children) = node {
-            if ITree::zero_in_loop(&children) {
-                *node = ITree::Zero;
-            } else {
-                rewrite_zero(children);
-            }
-        }
+        InterpreterStream(stream, cache.output(), sim_cache.output())
     }
 }
 
@@ -383,7 +378,6 @@ pub fn rewrite_write_loops(tree: &mut [ITree]) {
 
 /// Applies standard optimization pipeline in order
 pub fn standard_pipeline(tree: &mut [ITree]) {
-    rewrite_zero(tree);
     find_if_conditions(tree);
     rewrite_multiply(tree);
     rewrite_write_loops(tree);
@@ -403,6 +397,7 @@ pub enum Executable {
     Read,
     Write,
     Multiply(u32),
+    SingleMultiply(u32),
     //    ZeroRange(u32),
 }
 
@@ -412,11 +407,16 @@ pub struct DistinctMultiply {
     muls: Vec<MulArg>,
 }
 
-#[derive(Default)]
-pub struct MultiplyCache(Vec<DistinctMultiply>, HashMap<DistinctMultiply, u32>);
+pub struct CacheBuilder<T>(Vec<T>, HashMap<T, u32>);
 
-impl MultiplyCache {
-    fn insert(&mut self, dm: DistinctMultiply) -> u32 {
+impl<T> Default for CacheBuilder<T> {
+    fn default() -> Self {
+        Self(vec![], HashMap::default())
+    }
+}
+
+impl<T: Hash + Eq + Clone> CacheBuilder<T> {
+    fn insert(&mut self, dm: T) -> u32 {
         if let Some(v) = self.1.get(&dm) {
             *v
         } else {
@@ -428,10 +428,14 @@ impl MultiplyCache {
             idx
         }
     }
+
+    fn output(self) -> Vec<T> {
+        self.0
+    }
 }
 
 #[derive(Debug, Hash, Eq, PartialEq, Clone)]
-pub struct InterpreterStream(Vec<Executable>, Vec<DistinctMultiply>);
+pub struct InterpreterStream(Vec<Executable>, Vec<DistinctMultiply>, Vec<MulArg>);
 
 pub struct OExecutorState {
     idx: usize,
@@ -579,6 +583,16 @@ where
                 let dm = unsafe { self.1.get_unchecked(lut as usize) };
 
                 unsafe { state.mul(&dm.bound, dm.muls.iter().map(|ma| (ma.offset, ma.change))) }
+                    .map_err(|source| BfExecError {
+                        source,
+                        idx: exc_state.idx,
+                    })?;
+            }
+            Executable::SingleMultiply(lut) => {
+                let single = unsafe { self.2.get_unchecked(lut as usize) };
+
+                state
+                    .single_mul(single.offset, single.change)
                     .map_err(|source| BfExecError {
                         source,
                         idx: exc_state.idx,

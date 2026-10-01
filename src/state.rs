@@ -200,4 +200,31 @@ impl<C: BfOptimizable, I: io::Read, O: io::Write> BfState<C, I, O> {
 
         Ok(())
     }
+
+    #[inline(always)]
+    pub fn single_mul(&mut self, offset: isize, change: i64) -> Result<(), BfExecErrorTy> {
+        if self.jump_forward() {
+            return Ok(());
+        }
+
+        let Some(idx) = self.ptr().checked_add_signed(offset) else {
+            return Err(BfExecErrorTy::Underflow);
+        };
+
+        let true = idx < self.cells.len() else {
+            return Err(BfExecErrorTy::Overflow);
+        };
+
+        let by = i64::from(self.get().into());
+        self.zero();
+
+        // SAFETY: we checked idx is within bounds
+        unsafe {
+            self.cells
+                .get_unchecked_mut(idx)
+                .add(by.wrapping_mul(change))
+        };
+
+        Ok(())
+    }
 }
