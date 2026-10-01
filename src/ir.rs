@@ -360,6 +360,8 @@ pub fn rewrite_multiply(tree: &mut [ITree]) {
             } else {
                 rewrite_multiply(children);
             }
+        } else if let ITree::If(children) = node {
+            rewrite_multiply(children);
         }
     }
 }
@@ -372,6 +374,8 @@ pub fn rewrite_write_loops(tree: &mut [ITree]) {
             } else {
                 rewrite_write_loops(children);
             }
+        } else if let ITree::If(children) = node {
+            rewrite_write_loops(children);
         }
     }
 }
